@@ -87,12 +87,6 @@ def settle_amounts(rates: RateCard, supplier_nano: int, reserved_nano: int) -> S
     )
 
 
-def settle_compute(
-    rates: RateCard, resource_class: str, billed_seconds: int, reserved_nano: int
-) -> Settlement:
-    supplier = compute_cost_nano(rates, resource_class, billed_seconds) if billed_seconds > 0 else 0
-    return settle_amounts(rates, supplier, reserved_nano)
-
 
 __all__ = ["ComputeQuote", "Settlement", "compute_cost_nano", "fee_nano", "quote_compute",
-           "settle_amounts", "settle_compute"]
+           "settle_amounts"]

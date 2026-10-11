@@ -115,7 +115,7 @@ class Worker:
         hb.start()
         sim = None
         outcome, error, platform_fault = "completed", None, False
-        manifest = {}
+        manifest, bars = {}, []
         try:
             files, manifest, bars, spec = self._prepare(job)
             limits = SandboxLimits(cpu_seconds=int(cfg["max_runtime_seconds"]) + 5)
@@ -162,7 +162,7 @@ class Worker:
         # faults are not billed to the customer. Production replaces this with the
         # supplier's reported task usage, reconciled later (spec §15.5).
         billed = 0 if platform_fault else math.ceil(elapsed) + rates.startup_overhead_seconds
-        self._finish(claim, outcome, error, billed, sim, manifest)
+        self._finish(claim, outcome, error, billed, sim, manifest, bars)
 
     def _prepare(self, job: dict):
         cfg = job["config"]
@@ -194,7 +194,7 @@ class Worker:
         }
         return content, manifest, bars, spec
 
-    def _finish(self, claim, outcome, error, billed, sim, manifest) -> None:
+    def _finish(self, claim, outcome, error, billed, sim, manifest, bars) -> None:
         job, cfg = claim.job, claim.job["config"]
         with self.db.tx() as conn:
             row = conn.execute("SELECT state, fence_token FROM jobs WHERE id = %s FOR UPDATE",
@@ -211,15 +211,14 @@ class Worker:
                                  detail={"worker_id": self.worker_id, "basis": "local-wall"})
             receipt = settle_job(conn, job["id"], outcome, error=error)
             if sim is not None and outcome in ("completed", "incomplete"):
-                self._write_report(conn, job, outcome, sim, manifest, receipt)
+                self._write_report(conn, job, outcome, sim, manifest, receipt, bars)
 
-    def _write_report(self, conn, job, outcome, sim, manifest, receipt) -> None:
+    def _write_report(self, conn, job, outcome, sim, manifest, receipt, bars) -> None:
         cfg = job["config"]
         m = metrics.compute(sim.equity, Decimal(str(cfg["starting_cash"])), sim.fills,
                             sim.positions)
         model = engine.ExecutionModel(Decimal(str(cfg["taker_fee_bps"])),
                                       Decimal(str(cfg["slippage_bps"]))).describe()
-        bars = data.load(cfg["dataset_id"], cfg["start"], cfg["end"])
         rep = report.build(run_id=str(job["id"]), outcome=outcome, manifest=manifest, metrics=m,
                            sim=sim, model=model, quality=data.quality_findings(bars),
                            receipt=receipt)

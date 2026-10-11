@@ -12,8 +12,10 @@ process has:
 - rlimits on CPU seconds, address space, file size, and no core dumps;
 - `PR_SET_PDEATHSIG=SIGKILL`, so it dies with its supervisor (no orphans), plus its own
   session for group kill;
-- the JSON-lines protocol on a duplicated fd, with `sys.stdout` pointed at stderr so
-  strategy prints cannot forge protocol messages;
+- the JSON-lines protocol on a duplicated fd. Both `sys.stdout` and raw fd 1 point at
+  stderr, so neither prints nor `os.write(1, ...)` can reach the protocol. Malformed
+  replies and out-of-range quantities count as strategy errors, which the customer is
+  billed for, not as platform faults, which would mean free compute;
 - per-message timeouts bounded by the job's authorized deadline.
 
 The trusted simulator keeps the clock, fills, balances and all bars in *its* memory.

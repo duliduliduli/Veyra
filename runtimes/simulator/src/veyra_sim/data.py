@@ -3,6 +3,7 @@ must be synthetic or licensed). Never presented as real market history."""
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import random
 from dataclasses import dataclass
@@ -53,7 +54,8 @@ CATALOG: dict[str, DatasetSpec] = {
 }
 
 
-def generate_bars(spec: DatasetSpec) -> list[Bar]:
+@functools.cache
+def generate_bars(spec: DatasetSpec) -> tuple[Bar, ...]:
     """Random walk with Decimal rounding. ``random.Random`` is deterministic across
     platforms for a given seed, so the manifest hash is stable."""
     rng = random.Random(spec.seed)
@@ -73,16 +75,16 @@ def generate_bars(spec: DatasetSpec) -> list[Bar]:
         ts = (day0 + timedelta(days=i)).strftime("%Y-%m-%dT%H:%M:%SZ")
         bars.append(Bar(ts, open_, high, low, close, volume))
         price = close
-    return bars
+    return tuple(bars)
 
 
-def to_csv(bars: list[Bar]) -> str:
+def to_csv(bars) -> str:
     rows = ["ts,open,high,low,close,volume"]
     rows += [f"{b.ts},{b.open},{b.high},{b.low},{b.close},{b.volume}" for b in bars]
     return "\n".join(rows) + "\n"
 
 
-def manifest_hash(bars: list[Bar]) -> str:
+def manifest_hash(bars) -> str:
     return "sha256:" + hashlib.sha256(to_csv(bars).encode()).hexdigest()
 
 
@@ -90,7 +92,7 @@ def load(dataset_id: str, start: str | None = None, end: str | None = None) -> l
     """Bars with ``start <= ts < end`` (ISO dates, UTC)."""
     if dataset_id not in CATALOG:
         raise KeyError(f"unknown dataset {dataset_id!r}")
-    bars = generate_bars(CATALOG[dataset_id])
+    bars = list(generate_bars(CATALOG[dataset_id]))
     if start:
         bars = [b for b in bars if b.ts[:10] >= start]
     if end:

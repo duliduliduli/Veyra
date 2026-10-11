@@ -24,6 +24,7 @@ from veyra_sim.sandbox import StrategyError, StrategyProcess
 
 BPS = Decimal(10_000)
 FEE_Q = Decimal("0.00000001")
+MAX_QTY_DIGITS = 15  # quantities below 1e16 units
 
 
 @dataclass(frozen=True)
@@ -54,8 +55,6 @@ class SimResult:
     bars_total: int = 0
     bars_processed: int = 0
     stopped_early: bool = False
-    final_cash: Decimal = Decimal(0)
-    final_position: Decimal = Decimal(0)
 
 
 def _validate_intents(raw: Any, seq: int) -> list[dict[str, Any]]:
@@ -74,7 +73,8 @@ def _validate_intents(raw: Any, seq: int) -> list[dict[str, Any]]:
             q = Decimal(str(qty))
         except Exception as e:
             raise StrategyError(f"invalid qty {qty!r}") from e
-        if not q.is_finite() or q <= 0:
+        # Bounded so later Decimal math cannot overflow the context precision.
+        if not q.is_finite() or q <= 0 or q.adjusted() > MAX_QTY_DIGITS:
             raise StrategyError(f"invalid qty {qty!r}")
         out.append({"client_id": f"{seq}:{cid}", "side": side, "qty": q})
     return out
@@ -92,7 +92,7 @@ def run(
     on_progress: Callable[[int, int], None] = lambda done, total: None,
     progress_every: int = 50,
 ) -> SimResult:
-    res = SimResult(bars_total=len(bars), final_cash=starting_cash)
+    res = SimResult(bars_total=len(bars))
     cash, position = starting_cash, Decimal(0)
     pending: list[dict[str, Any]] = []
 
@@ -133,7 +133,6 @@ def run(
         if not res.stopped_early:
             proc.request({"type": "finalize"})
 
-    res.final_cash, res.final_position = cash, position
     on_progress(res.bars_processed, len(bars))
     return res
 

@@ -210,3 +210,34 @@ def test_unknown_idempotency_and_bad_input_are_rejected(api: Api):
         assert api.c.post("/v1/quotes", json=body, headers=who).status_code == 422, kw
     r = api.c.post("/v1/jobs", json={"authorization_id": str(uuid.uuid4())}, headers=who)
     assert r.status_code == 422  # Idempotency-Key header required
+
+
+def _assert_customer_fault(api, who, job, quote):
+    job = api.get_job(who, job["id"])
+    assert job["outcome"] == "failed"
+    assert job["error"].startswith("strategy error"), job["error"]
+    # a misbehaving strategy pays for what it used; it must not get free compute
+    assert 0 < job["receipt"]["customer_charge_nano"] <= quote["customer_max_nano"]
+
+
+def test_absurd_quantity_is_a_strategy_error_not_free_compute(api: Api, worker):
+    huge = ("from veyra_sdk import Strategy\n"
+            "class Huge(Strategy):\n"
+            "    def on_bar(self, bar, ctx):\n"
+            "        ctx.buy('1e40')\n")
+    who, org, quote, job = api.funded_job(source=huge)
+    worker.run_once(job["id"])
+    _assert_customer_fault(api, who, job, quote)
+
+
+def test_raw_writes_to_stdout_cannot_break_the_protocol(api: Api, worker):
+    raw = ("import os\n"
+           "from veyra_sdk import Strategy\n"
+           "class Raw(Strategy):\n"
+           "    def on_bar(self, bar, ctx):\n"
+           "        os.write(1, b'not json\\n')\n")
+    who, org, quote, job = api.funded_job(source=raw)
+    worker.run_once(job["id"])
+    job = api.get_job(who, job["id"])
+    # raw fd writes go to stderr now, so the run completes normally
+    assert job["outcome"] == "completed", job["error"]

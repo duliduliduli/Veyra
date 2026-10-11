@@ -81,9 +81,7 @@ class StrategyProcess:
             cwd=self.workdir, env=env, text=True, bufsize=1,
             preexec_fn=_child_setup(limits),  # noqa: PLW1509 - required for rlimits
         )
-        self.pid = self.proc.pid
         self._out: queue.Queue[str | None] = queue.Queue()
-        self._stderr: list[str] = []
         threading.Thread(target=self._pump_stdout, daemon=True).start()
         threading.Thread(target=self._pump_stderr, daemon=True).start()
 
@@ -95,13 +93,9 @@ class StrategyProcess:
 
     def _pump_stderr(self) -> None:
         assert self.proc.stderr
-        for line in self.proc.stderr:
-            if len(self._stderr) < 200:
-                self._stderr.append(line.rstrip()[:500])
-
-    @property
-    def stderr_tail(self) -> list[str]:
-        return self._stderr[-50:]
+        # shortcut: strategy prints are drained and dropped, surface them once IDE logs exist
+        for _ in self.proc.stderr:
+            pass
 
     def request(self, msg: dict) -> dict:
         try:
@@ -126,7 +120,12 @@ class StrategyProcess:
             raise StrategyError(f"strategy process exited: {self._exit_reason()}")
         if len(line) > self.limits.max_message_bytes:
             raise StrategyError("strategy reply exceeded size limit")
-        reply = json.loads(line)
+        try:
+            reply = json.loads(line)
+        except ValueError:
+            raise StrategyError("strategy sent a malformed protocol message") from None
+        if not isinstance(reply, dict):
+            raise StrategyError("strategy sent a malformed protocol message")
         if reply.get("type") == "error":
             raise StrategyError(reply.get("message", "strategy error"))
         return reply

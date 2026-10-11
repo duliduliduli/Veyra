@@ -11,7 +11,6 @@ from veyra_billing.quote import (
     fee_nano,
     quote_compute,
     settle_amounts,
-    settle_compute,
 )
 from veyra_billing.rates import RATE_CARD_V1, RateCard, ResourceClass
 
@@ -27,7 +26,6 @@ __all__ = [
     "settle_amounts",
     "format_usd",
     "quote_compute",
-    "settle_compute",
     "to_nano",
     "usd",
 ]

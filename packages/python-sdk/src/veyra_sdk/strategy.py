@@ -89,11 +89,5 @@ class Strategy:
     def on_fill(self, fill: Fill) -> None:
         pass
 
-    def snapshot_state(self) -> dict[str, Any]:
-        return {}
-
-    def restore_state(self, state: dict[str, Any]) -> None:
-        pass
-
     def finalize(self) -> None:
         pass

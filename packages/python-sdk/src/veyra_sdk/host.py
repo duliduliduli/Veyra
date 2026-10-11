@@ -34,6 +34,7 @@ def _load_strategy(path: str) -> Strategy:
 
 def main() -> int:
     proto_out = os.fdopen(os.dup(sys.stdout.fileno()), "w", buffering=1)
+    os.dup2(sys.stderr.fileno(), sys.stdout.fileno())  # raw fd 1 writes go to stderr too
     sys.stdout = sys.stderr  # user prints cannot reach the protocol channel
 
     def send(msg: dict) -> None:
