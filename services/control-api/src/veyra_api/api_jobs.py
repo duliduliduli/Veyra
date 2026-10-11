@@ -1,0 +1,256 @@
+import json
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
+from typing import Literal
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Response
+from pydantic import BaseModel, Field, field_validator
+from veyra_api import ledger
+from veyra_api.auth import CAN_RESEARCH, ROLES_ALL, Principal, audit, require
+from veyra_api.deps import CurrentUser, db, settings, store
+from veyra_api.settlement import settle_job
+from veyra_billing import RATE_CARD_V1, format_usd, quote_compute, to_nano
+from veyra_sim import ENGINE_NAME, ENGINE_VERSION, data
+from veyra_sim.report import digest
+
+router = APIRouter(prefix="/v1")
+
+# Unprofiled heuristic until W38 measures real runtimes; shown to the customer as such.
+EST_STARTUP_S = 3
+EST_SECONDS_PER_BAR = Decimal("0.002")
+
+
+class QuoteIn(BaseModel):
+    project_version_id: UUID
+    dataset_id: str
+    start: date
+    end: date
+    starting_cash: Decimal = Field(default=Decimal("10000"), gt=0, le=Decimal("1e12"))
+    params: dict = Field(default_factory=dict)
+    resource_class: Literal["small", "standard", "large"] = "small"
+    max_runtime_seconds: int = Field(default=300, ge=10)
+    taker_fee_bps: Decimal = Field(default=Decimal("10"), ge=0, le=1000)
+    slippage_bps: Decimal = Field(default=Decimal("5"), ge=0, le=1000)
+
+    @field_validator("params")
+    @classmethod
+    def small_params(cls, v: dict) -> dict:
+        if len(json.dumps(v)) > 8192:
+            raise ValueError("params must serialize to at most 8 KiB")
+        return v
+
+
+class AuthorizeIn(BaseModel):
+    # Explicit consent: the client must echo the exact ceiling it showed the user.
+    accept_max_nano: int
+
+
+class JobIn(BaseModel):
+    authorization_id: UUID
+
+
+def _usd(n: int) -> str:
+    return format_usd(n, 4)
+
+
+@router.post("/quotes", status_code=201)
+def create_quote(body: QuoteIn, p: Principal = CurrentUser, database=Depends(db),
+                 cfg=Depends(settings)):
+    if body.start >= body.end:
+        raise HTTPException(422, "start must be before end")
+    if body.dataset_id not in data.CATALOG:
+        raise HTTPException(422, "unknown dataset")
+    if body.max_runtime_seconds > cfg.max_job_runtime_seconds:
+        raise HTTPException(422, f"max_runtime_seconds above {cfg.max_job_runtime_seconds}")
+    bars = data.load(body.dataset_id, body.start.isoformat(), body.end.isoformat())
+    if not bars:
+        raise HTTPException(422, "no data in the selected range")
+    est = EST_STARTUP_S + int(EST_SECONDS_PER_BAR * len(bars)) + 1
+    q = quote_compute(RATE_CARD_V1, body.resource_class, est, body.max_runtime_seconds)
+    if q.customer_max_nano > to_nano(cfg.max_job_customer_usd):
+        raise HTTPException(422, f"ceiling {_usd(q.customer_max_nano)} exceeds per-job limit "
+                                 f"${cfg.max_job_customer_usd}; lower max_runtime_seconds")
+    with database.tx() as conn:
+        pv = conn.execute("SELECT * FROM project_versions WHERE id = %s",
+                          (body.project_version_id,)).fetchone()
+        if pv is None:
+            raise HTTPException(404, "not found")
+        require(conn, p, pv["org_id"], CAN_RESEARCH)
+        request = json.loads(body.model_dump_json())
+        inputs = {
+            "code": pv["content_hash"], "data": data.manifest_hash(bars),
+            "engine": f"{ENGINE_NAME}=={ENGINE_VERSION}", "rates": RATE_CARD_V1.version,
+            "request": request,
+        }
+        estimate = q.as_dict() | {
+            "bars": len(bars), "method": "unprofiled heuristic (startup + per-bar)",
+            "data_cost_nano": 0, "data_note": "synthetic dataset; no acquisition cost",
+            "display": {"expected": _usd(q.customer_expected_nano),
+                        "maximum": _usd(q.customer_max_nano)},
+            "tax": "not yet calculated",
+            "failure_policy": "Charged for compute actually used, never above the maximum. "
+                              "Unused reservation is released at settlement.",
+        }
+        row = conn.execute(
+            "INSERT INTO quotes(org_id, project_version_id, request, input_hash, rate_version, "
+            "estimate, customer_max_nano, expires_at, created_by) VALUES "
+            "(%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id, input_hash, customer_max_nano, "
+            "expires_at, estimate",
+            (pv["org_id"], pv["id"], json.dumps(request), digest(inputs), RATE_CARD_V1.version,
+             json.dumps(estimate), q.customer_max_nano,
+             datetime.now(UTC) + timedelta(seconds=cfg.quote_ttl_seconds), p.user_id)).fetchone()
+    return row | {"inputs": inputs}
+
+
+@router.post("/quotes/{quote_id}/authorize", status_code=201)
+def authorize(quote_id: UUID, body: AuthorizeIn, p: Principal = CurrentUser,
+              database=Depends(db)):
+    with database.tx() as conn:
+        quote = conn.execute("SELECT * FROM quotes WHERE id = %s FOR UPDATE",
+                             (quote_id,)).fetchone()
+        if quote is None:
+            raise HTTPException(404, "not found")
+        require(conn, p, quote["org_id"], CAN_RESEARCH)
+        existing = conn.execute("SELECT * FROM authorizations WHERE quote_id = %s",
+                                (quote_id,)).fetchone()
+        if existing:
+            return existing  # idempotent retry
+        if quote["expires_at"] <= datetime.now(UTC):
+            raise HTTPException(410, "quote expired; request a new quote")
+        if body.accept_max_nano != quote["customer_max_nano"]:
+            raise HTTPException(409, "accepted maximum does not match the quote")
+        auth = conn.execute(
+            "INSERT INTO authorizations(org_id, quote_id, input_hash, reserved_nano, status, "
+            "approved_by) VALUES (%s,%s,%s,%s,'reserved',%s) RETURNING *",
+            (quote["org_id"], quote_id, quote["input_hash"], quote["customer_max_nano"],
+             p.user_id)).fetchone()
+        try:
+            ledger.reserve(conn, quote["org_id"], quote["customer_max_nano"], auth["id"])
+        except ledger.InsufficientFunds:
+            raise HTTPException(402, "insufficient service credit for this maximum") from None
+        audit(conn, p, quote["org_id"], "quote.authorize", f"authorization:{auth['id']}",
+              {"reserved_nano": auth["reserved_nano"], "input_hash": quote["input_hash"]})
+    return auth
+
+
+@router.post("/jobs", status_code=201)
+def create_job(body: JobIn, response: Response, p: Principal = CurrentUser,
+               database=Depends(db), idempotency_key: str = Header(min_length=8, max_length=128)):
+    with database.tx() as conn:
+        auth = conn.execute("SELECT * FROM authorizations WHERE id = %s FOR UPDATE",
+                            (body.authorization_id,)).fetchone()
+        if auth is None:
+            raise HTTPException(404, "not found")
+        require(conn, p, auth["org_id"], CAN_RESEARCH)
+        prior = conn.execute("SELECT * FROM jobs WHERE org_id = %s AND idempotency_key = %s",
+                             (auth["org_id"], idempotency_key)).fetchone()
+        if prior:
+            if prior["authorization_id"] != auth["id"]:
+                raise HTTPException(409, "idempotency key reused with a different request")
+            response.status_code = 200
+            return _job_view(conn, prior)
+        if conn.execute("SELECT 1 FROM jobs WHERE authorization_id = %s",
+                        (auth["id"],)).fetchone():
+            raise HTTPException(409, "authorization already used by another job")
+        if auth["status"] != "reserved":
+            raise HTTPException(409, "authorization is not active")
+        quote = conn.execute("SELECT * FROM quotes WHERE id = %s", (auth["quote_id"],)).fetchone()
+        if quote["input_hash"] != auth["input_hash"]:
+            raise HTTPException(409, "authorization does not match quote inputs")
+        config = quote["request"] | {
+            "quote_id": str(quote["id"]), "input_hash": quote["input_hash"],
+            "rate_version": quote["rate_version"],
+            "engine": f"{ENGINE_NAME}=={ENGINE_VERSION}",
+        }
+        job = conn.execute(
+            "INSERT INTO jobs(org_id, project_version_id, authorization_id, idempotency_key, "
+            "config, state, created_by) VALUES (%s,%s,%s,%s,%s,'queued',%s) RETURNING *",
+            (auth["org_id"], quote["project_version_id"], auth["id"], idempotency_key,
+             json.dumps(config), p.user_id)).fetchone()
+        conn.execute("INSERT INTO outbox(event_type, org_id, resource_id, resource_version, "
+                     "correlation_id) VALUES ('job.queued', %s, %s, %s, %s)",
+                     (job["org_id"], job["id"], job["version"], str(quote["id"])))
+        audit(conn, p, job["org_id"], "job.create", f"job:{job['id']}")
+        return _job_view(conn, job)
+
+
+def _job_view(conn, job: dict) -> dict:
+    report = conn.execute("SELECT id FROM reports WHERE job_id = %s", (job["id"],)).fetchone()
+    attempts = conn.execute(
+        "SELECT attempt_no, worker_id, started_at, heartbeat_at, ended_at, end_reason, "
+        "billed_seconds FROM job_attempts WHERE job_id = %s ORDER BY attempt_no",
+        (job["id"],)).fetchall()
+    auth = conn.execute("SELECT reserved_nano, status FROM authorizations WHERE id = %s",
+                        (job["authorization_id"],)).fetchone()
+    return {k: job[k] for k in ("id", "org_id", "project_version_id", "authorization_id",
+                                "state", "outcome", "version", "cancel_requested", "progress",
+                                "error", "config", "receipt", "created_at", "updated_at",
+                                "settled_at")} | {
+        "budget": {"reserved_nano": auth["reserved_nano"], "status": auth["status"],
+                   "maximum": _usd(auth["reserved_nano"])},
+        "report_id": report["id"] if report else None, "attempts": attempts}
+
+
+def _load_job(conn, p, job_id, allowed, lock=False):
+    job = conn.execute("SELECT * FROM jobs WHERE id = %s" + (" FOR UPDATE" if lock else ""),
+                       (job_id,)).fetchone()
+    if job is None:
+        raise HTTPException(404, "not found")
+    require(conn, p, job["org_id"], allowed)
+    return job
+
+
+@router.get("/jobs/{job_id}")
+def get_job(job_id: UUID, p: Principal = CurrentUser, database=Depends(db)):
+    with database.tx() as conn:
+        return _job_view(conn, _load_job(conn, p, job_id, ROLES_ALL))
+
+
+@router.post("/jobs/{job_id}/cancel", status_code=202)
+def cancel_job(job_id: UUID, p: Principal = CurrentUser, database=Depends(db)):
+    """Requests a stop. Queued jobs settle immediately with no compute charge; running
+    jobs stop at the next checkpoint and settle for compute actually used."""
+    with database.tx() as conn:
+        job = _load_job(conn, p, job_id, CAN_RESEARCH, lock=True)
+        if job["state"] == "queued":
+            settle_job(conn, job_id, "cancelled")
+        elif job["state"] in ("running", "finalizing", "stopping"):
+            conn.execute("UPDATE jobs SET cancel_requested = true, updated_at = now(), "
+                         "version = version + 1 WHERE id = %s", (job_id,))
+        audit(conn, p, job["org_id"], "job.cancel", f"job:{job_id}", {"state": job["state"]})
+        return _job_view(conn, conn.execute("SELECT * FROM jobs WHERE id = %s",
+                                            (job_id,)).fetchone())
+
+
+ARTIFACT_TYPES = {"report.json": "application/json", "report.html": "text/html; charset=utf-8",
+                  "trades.csv": "text/csv; charset=utf-8"}
+
+
+@router.get("/reports/{report_id}")
+def get_report(report_id: UUID, p: Principal = CurrentUser, database=Depends(db)):
+    with database.tx() as conn:
+        rep = conn.execute("SELECT * FROM reports WHERE id = %s", (report_id,)).fetchone()
+        if rep is None:
+            raise HTTPException(404, "not found")
+        require(conn, p, rep["org_id"], ROLES_ALL)
+    rep["artifacts"] = {name: {k: v for k, v in meta.items() if k != "key"}
+                        for name, meta in rep["artifacts"].items()}
+    return rep
+
+
+@router.get("/reports/{report_id}/artifacts/{name}")
+def get_artifact(report_id: UUID, name: str, p: Principal = CurrentUser,
+                 database=Depends(db), objects=Depends(store)):
+    if name not in ARTIFACT_TYPES:
+        raise HTTPException(404, "not found")
+    with database.tx() as conn:
+        rep = conn.execute("SELECT * FROM reports WHERE id = %s", (report_id,)).fetchone()
+        if rep is None or name not in rep["artifacts"]:
+            raise HTTPException(404, "not found")
+        require(conn, p, rep["org_id"], ROLES_ALL)
+    headers = {"X-Content-Type-Options": "nosniff",
+               "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; "
+                                          "sandbox"}
+    return Response(objects.get(rep["artifacts"][name]["key"]), media_type=ARTIFACT_TYPES[name],
+                    headers=headers)

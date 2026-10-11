@@ -1,0 +1,53 @@
+[project]
+name = "veyra"
+version = "0.1.0"
+description = "Veyra trading workspace monorepo (workspace root)"
+requires-python = ">=3.12"
+dependencies = [
+    "veyra-billing",
+    "veyra-sdk",
+    "veyra-sim",
+    "veyra-api",
+    "veyra-scheduler",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "httpx>=0.27",
+    "ruff>=0.6",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = [
+    "packages/billing",
+    "packages/python-sdk",
+    "runtimes/simulator",
+    "services/control-api",
+    "services/scheduler",
+]
+
+[tool.uv.sources]
+veyra-billing = { workspace = true }
+veyra-sdk = { workspace = true }
+veyra-sim = { workspace = true }
+veyra-api = { workspace = true }
+veyra-scheduler = { workspace = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI dependency injection uses Depends()/Header() in defaults by design.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Header", "veyra_api.deps.CurrentUser"]
