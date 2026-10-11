@@ -63,7 +63,10 @@ async def payment_webhook(request: Request, database=Depends(db), cfg=Depends(se
         payments.verify(cfg.payment_webhook_secret, raw, veyra_signature)
     except payments.BadSignature as e:
         raise HTTPException(400, str(e)) from None
-    event = json.loads(raw)
+    return _apply_payment_event(database, json.loads(raw))
+
+
+def _apply_payment_event(database, event: dict) -> dict:
     event_id, kind = str(event["id"]), event["type"]
     ref, amount = event["data"]["provider_ref"], int(event["data"]["amount_nano"])
     with database.tx() as conn:
@@ -87,3 +90,19 @@ async def payment_webhook(request: Request, database=Depends(db), cfg=Depends(se
             conn.execute("UPDATE payments SET status = 'failed' WHERE id = %s", (pay["id"],))
         audit(conn, None, pay["org_id"], f"billing.{kind}", f"payment:{pay['id']}")
     return {"status": "processed"}
+
+
+# Local stand-in for the provider's hosted checkout. Only mounted when dev auth is on.
+dev_router = APIRouter(prefix="/v1/dev")
+
+
+@dev_router.post("/payments/{payment_id}/complete")
+def dev_complete_payment(payment_id: UUID, p: Principal = CurrentUser, database=Depends(db)):
+    with database.tx() as conn:
+        pay = conn.execute("SELECT * FROM payments WHERE id = %s", (payment_id,)).fetchone()
+        if pay is None:
+            raise HTTPException(404, "not found")
+        require(conn, p, pay["org_id"], CAN_BILL)
+    return _apply_payment_event(database, {
+        "id": f"devcheckout_{payment_id}", "type": "payment.succeeded",
+        "data": {"provider_ref": pay["provider_ref"], "amount_nano": pay["amount_nano"]}})

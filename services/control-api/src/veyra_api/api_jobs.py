@@ -201,6 +201,20 @@ def _load_job(conn, p, job_id, allowed, lock=False):
     return job
 
 
+@router.get("/orgs/{org_id}/jobs")
+def list_jobs(org_id: UUID, p: Principal = CurrentUser, database=Depends(db)):
+    with database.tx() as conn:
+        require(conn, p, org_id, ROLES_ALL)
+        rows = conn.execute(
+            "SELECT j.id, j.state, j.outcome, j.progress, j.created_at, j.settled_at, "
+            "j.config->>'dataset_id' AS dataset_id, a.reserved_nano, "
+            "(j.receipt->>'customer_charge_nano')::bigint AS charge_nano, r.id AS report_id "
+            "FROM jobs j JOIN authorizations a ON a.id = j.authorization_id "
+            "LEFT JOIN reports r ON r.job_id = j.id WHERE j.org_id = %s "
+            "ORDER BY j.created_at DESC LIMIT 50", (org_id,)).fetchall()
+    return {"jobs": rows}
+
+
 @router.get("/jobs/{job_id}")
 def get_job(job_id: UUID, p: Principal = CurrentUser, database=Depends(db)):
     with database.tx() as conn:

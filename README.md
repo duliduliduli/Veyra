@@ -16,6 +16,7 @@ blocked on business decisions.
 
 | Path | What |
 |---|---|
+| `apps/web` | Phone-first app: markets, code, runs, wallet (no build step) |
 | `packages/billing` | Exact nano-USD money, versioned rate cards, quote/settlement math |
 | `packages/python-sdk` | `Strategy` base class and the sandbox-side protocol host |
 | `runtimes/simulator` | Trusted bar simulator, synthetic data, metrics, reports, process sandbox |
@@ -36,15 +37,24 @@ uv run pytest                # full test suite
 uv run python scripts/demo.py   # end-to-end walkthrough -> demo-output/report.html
 ```
 
-Run the services:
+Run the app:
 
 ```bash
-uv run uvicorn veyra_api.app:create_app --factory --reload   # API on :8000, docs at /docs
-uv run python -m veyra_scheduler all                         # worker + reaper
+uv run uvicorn veyra_api.app:create_app --factory --reload   # app + API on :8000
+uv run python -m veyra_scheduler all                         # worker + reaper (runs backtests)
 ```
 
-Local requests authenticate with an `X-Veyra-Dev-User: you@example.com` header. That
-only works when `APP_ENV` is `local` or `test`.
+Open http://localhost:8000 on a phone (same network: use `--host 0.0.0.0` and your
+computer's IP) or with the browser's phone emulation. Sign in with any email, add test
+credit in Wallet, create a strategy in Code, get a price, approve, and read the report.
+API docs are at `/docs`. The dev sign-in and test payments only exist when `APP_ENV` is
+`local` or `test`.
+
+Phone journey test (needs the two commands above running):
+
+```bash
+npm i --no-save playwright && node tests/e2e/phone.mjs light
+```
 
 ## The money flow
 

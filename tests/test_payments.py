@@ -55,3 +55,24 @@ def test_failed_payment_does_not_credit(api: Api):
     api.ok(api.webhook(_evt(pay, kind="payment.failed")))
     assert api.ok(api.webhook(_evt(pay)))["status"] == "already_failed"
     assert api.balance(who, org)["available_nano"] == 0
+
+
+def test_dev_checkout_credits_once_and_needs_billing_role(api: Api):
+    who, org, pay = _pending(api)
+    stranger = api.user()
+    assert api.c.post(f"/v1/dev/payments/{pay['id']}/complete",
+                      headers=stranger).status_code == 404
+    api.ok(api.c.post(f"/v1/dev/payments/{pay['id']}/complete", headers=who))
+    again = api.ok(api.c.post(f"/v1/dev/payments/{pay['id']}/complete", headers=who))
+    assert again["status"] == "duplicate"
+    assert api.balance(who, org)["available_nano"] == 25 * 10**9
+
+
+def test_dev_checkout_does_not_exist_outside_local_and_test(settings):
+    from dataclasses import replace
+
+    from veyra_api.app import create_app
+
+    prod = create_app(replace(settings, app_env="production"))
+    paths = {getattr(r, "path", "") for r in prod.routes}
+    assert not any(p.startswith("/v1/dev") for p in paths)

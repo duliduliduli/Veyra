@@ -1,6 +1,21 @@
 # Build status against the master spec
 
-Last updated 2026-10-11. Phase: **P1/P2 groundwork, sprint 1 (spec §30).**
+Last updated 2026-10-11. Phase: **P1/P2 groundwork, sprint 1 (spec §30)**, plus the
+first phone app (business synopsis, stage 1).
+
+## Stage 1 journey (business synopsis) on a phone
+
+| Step | Status |
+|---|---|
+| Open the app, study a market | Done: touch candlestick chart, 3M/1Y/All, source and license shown |
+| Develop a strategy | Done: templates, phone editor with symbol bar, device drafts, versions |
+| Run a paid backtest | Done: price shown next to Approve; reserve, run, settle |
+| Understand the report | Done: key numbers first, equity chart, receipt, HTML/CSV downloads |
+| Return later | Done: runs continue server-side; Runs tab and reloads come back |
+| Watch spending | Done: balance, reserved, spent, usage list |
+| Ask AI to write or change code | **Not started.** Needs an AI provider account (spec A17) |
+| Real data, real payments, real accounts | **Blocked on founder**: data contract, Stripe, Clerk |
+| Paper trading, live bots, marketplace | Later stages (3–5) |
 
 ## Sprint 1 steps (spec §30)
 

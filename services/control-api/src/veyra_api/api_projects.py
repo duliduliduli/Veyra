@@ -88,6 +88,31 @@ def catalog(p: Principal = CurrentUser):
     return {"datasets": out}
 
 
+@router.get("/catalog/datasets/{dataset_id}/bars")
+def bars(dataset_id: str, start: str | None = None, end: str | None = None,
+         p: Principal = CurrentUser):
+    if dataset_id not in data.CATALOG:
+        raise HTTPException(404, "not found")
+    # Strings keep exact prices; clients convert only for drawing.
+    return {"dataset_id": dataset_id, "bars": [
+        {"ts": b.ts, "open": str(b.open), "high": str(b.high), "low": str(b.low),
+         "close": str(b.close), "volume": str(b.volume)}
+        for b in data.load(dataset_id, start, end)]}
+
+
+@router.get("/orgs/{org_id}/projects")
+def list_projects(org_id: UUID, p: Principal = CurrentUser, database=Depends(db)):
+    with database.tx() as conn:
+        require(conn, p, org_id, ROLES_ALL)
+        rows = conn.execute(
+            "SELECT p.id, p.name, p.created_at, v.id AS latest_version_id, "
+            "v.version_no AS latest_version_no FROM projects p "
+            "JOIN LATERAL (SELECT id, version_no FROM project_versions "
+            "WHERE project_id = p.id ORDER BY version_no DESC LIMIT 1) v ON true "
+            "WHERE p.org_id = %s ORDER BY p.created_at DESC LIMIT 100", (org_id,)).fetchall()
+    return {"projects": rows}
+
+
 @router.post("/orgs/{org_id}/projects", status_code=201)
 def create_project(org_id: UUID, body: ProjectIn, p: Principal = CurrentUser,
                    database=Depends(db), objects=Depends(store)):

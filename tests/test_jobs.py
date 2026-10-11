@@ -241,3 +241,14 @@ def test_raw_writes_to_stdout_cannot_break_the_protocol(api: Api, worker):
     job = api.get_job(who, job["id"])
     # raw fd writes go to stderr now, so the run completes normally
     assert job["outcome"] == "completed", job["error"]
+
+
+def test_chart_bars_and_web_app_are_served(api: Api):
+    who = api.user()
+    bars = api.ok(api.c.get("/v1/catalog/datasets/synth-btcusd-1d-v1/bars",
+                            params={"start": "2021-01-01", "end": "2021-02-01"}, headers=who))
+    assert len(bars["bars"]) == 31 and bars["bars"][0]["ts"].startswith("2021-01-01")
+    assert api.c.get("/v1/catalog/datasets/nope/bars", headers=who).status_code == 404
+    page = api.c.get("/")
+    assert page.status_code == 200 and "<title>" in page.text
+    assert "script-src" not in page.headers["content-security-policy"]  # 'self' only

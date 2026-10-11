@@ -64,3 +64,16 @@ def test_roles_are_enforced(api: Api):
     # but billing admins can fund and see the balance
     api.topup(billing, org)
     assert api.balance(billing, org)["available_nano"] == 20 * 10**9
+
+
+def test_lists_are_scoped_to_the_callers_org(api: Api):
+    alice, org, quote, job = api.funded_job()
+    projects = api.ok(api.c.get(f"/v1/orgs/{org}/projects", headers=alice))["projects"]
+    jobs = api.ok(api.c.get(f"/v1/orgs/{org}/jobs", headers=alice))["jobs"]
+    assert len(projects) == 1 and projects[0]["latest_version_no"] == 1
+    assert [j["id"] for j in jobs] == [job["id"]]
+    assert jobs[0]["reserved_nano"] == quote["customer_max_nano"]
+    mallory = api.user()
+    api.org(mallory)
+    for path in (f"/v1/orgs/{org}/projects", f"/v1/orgs/{org}/jobs"):
+        assert api.c.get(path, headers=mallory).status_code == 404

@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1115">
+  <title>Veyra</title>
+  <link rel="stylesheet" href="app.css">
+  <script src="vendor/lightweight-charts.standalone.production.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <a href="#markets" class="brand">Veyra</a>
+    <a href="#wallet" class="pill" id="balance-pill" hidden>—</a>
+  </header>
+
+  <p id="status" class="status" role="status" aria-live="polite"></p>
+
+  <main>
+    <section id="view-signin" class="view" hidden>
+      <h1>Sign in</h1>
+      <p class="muted">Local development sign-in. Production uses real accounts.</p>
+      <form id="signin-form">
+        <label for="signin-email">Email</label>
+        <input id="signin-email" type="email" autocomplete="email" required>
+        <button class="primary" type="submit">Continue</button>
+      </form>
+    </section>
+
+    <section id="view-markets" class="view" hidden>
+      <h1>Markets</h1>
+      <label for="market-dataset">Dataset</label>
+      <select id="market-dataset"></select>
+      <div class="chips" role="group" aria-label="Range">
+        <button type="button" data-range="90" aria-pressed="false">3M</button>
+        <button type="button" data-range="365" class="on" aria-pressed="true">1Y</button>
+        <button type="button" data-range="0" aria-pressed="false">All</button>
+      </div>
+      <div id="market-chart" class="chart" role="img" aria-label="Candlestick price chart"></div>
+      <p id="market-meta" class="muted small"></p>
+      <a class="button" href="#code">Backtest a strategy</a>
+    </section>
+
+    <section id="view-code" class="view" hidden>
+      <h1>Strategies</h1>
+      <form id="new-project-form" class="row">
+        <label for="new-project-name" class="sr-only">New strategy name</label>
+        <input id="new-project-name" placeholder="New strategy name" required maxlength="120">
+        <button type="submit">Create</button>
+      </form>
+      <p class="muted small">New strategies start from the moving-average template.</p>
+      <ul id="project-list" class="cards"></ul>
+    </section>
+
+    <section id="view-project" class="view" hidden>
+      <h1 id="project-title">Strategy</h1>
+      <p class="muted small"><span id="project-version"></span> · <span id="draft-state"></span></p>
+      <div class="keys" role="toolbar" aria-label="Insert symbol">
+        <button type="button" data-key="    ">Tab</button>
+        <button type="button" data-key="(">(</button>
+        <button type="button" data-key=")">)</button>
+        <button type="button" data-key=":">:</button>
+        <button type="button" data-key="[">[</button>
+        <button type="button" data-key="]">]</button>
+        <button type="button" data-key="=">=</button>
+        <button type="button" data-key="'">'</button>
+        <button type="button" data-key="_">_</button>
+      </div>
+      <label for="editor" class="sr-only">strategy.py</label>
+      <textarea id="editor" class="editor" spellcheck="false" autocapitalize="off"
+                autocomplete="off" autocorrect="off" wrap="off"></textarea>
+      <button type="button" id="save-version">Save version</button>
+
+      <h2>Backtest</h2>
+      <form id="quote-form">
+        <label for="bt-dataset">Data</label>
+        <select id="bt-dataset"></select>
+        <div class="row">
+          <div><label for="bt-start">From</label><input id="bt-start" type="date" required></div>
+          <div><label for="bt-end">To</label><input id="bt-end" type="date" required></div>
+        </div>
+        <div class="row">
+          <div><label for="bt-cash">Starting cash (USD)</label>
+            <input id="bt-cash" inputmode="decimal" value="10000" required></div>
+          <div><label for="bt-runtime">Time limit</label>
+            <select id="bt-runtime">
+              <option value="60">1 min</option>
+              <option value="120" selected>2 min</option>
+              <option value="300">5 min</option>
+            </select></div>
+        </div>
+        <label for="bt-params">Parameters (JSON)</label>
+        <input id="bt-params" value='{"fast": 10, "slow": 40}' spellcheck="false" autocapitalize="off">
+        <button class="primary" type="submit">Get price</button>
+      </form>
+      <div id="quote-box" class="quote" hidden>
+        <p>Estimated <strong id="q-expected"></strong> · Maximum <strong id="q-max"></strong></p>
+        <p class="muted small">You pay for compute actually used, never more than the maximum.
+          The rest is returned to your balance. Synthetic data costs nothing.</p>
+        <button class="primary" type="button" id="approve">Approve</button>
+      </div>
+    </section>
+
+    <section id="view-runs" class="view" hidden>
+      <h1>Runs</h1>
+      <p class="muted small">Runs keep going when you close the app.</p>
+      <ul id="run-list" class="cards"></ul>
+    </section>
+
+    <section id="view-run" class="view" hidden>
+      <h1>Backtest</h1>
+      <p id="run-state" class="badge"></p>
+      <progress id="run-progress" max="1" value="0"></progress>
+      <p id="run-budget" class="muted small"></p>
+      <button type="button" id="run-cancel" hidden>Stop run</button>
+      <p id="run-error" class="error" hidden></p>
+      <div id="run-report" hidden>
+        <p id="run-note" class="note"></p>
+        <dl id="run-tiles" class="tiles"></dl>
+        <h2>Equity</h2>
+        <div id="equity-chart" class="chart short" role="img" aria-label="Equity curve"></div>
+        <h2>Receipt</h2>
+        <dl id="run-receipt" class="receipt"></dl>
+        <div class="row">
+          <button type="button" data-artifact="report.html">Full report</button>
+          <button type="button" data-artifact="trades.csv">Trades CSV</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-wallet" class="view" hidden>
+      <h1>Wallet</h1>
+      <dl id="wallet-balance" class="tiles"></dl>
+      <h2>Add credit</h2>
+      <div class="chips" role="group" aria-label="Amount">
+        <button type="button" data-topup="5.00">$5</button>
+        <button type="button" data-topup="10.00">$10</button>
+        <button type="button" data-topup="25.00">$25</button>
+      </div>
+      <p class="muted small">Test payments only. Credit appears after the payment is confirmed.</p>
+      <h2>Recent usage</h2>
+      <ul id="usage-list" class="cards"></ul>
+      <button type="button" id="signout">Sign out</button>
+    </section>
+  </main>
+
+  <nav class="tabs" aria-label="Main">
+    <a href="#markets" data-tab="markets">Markets</a>
+    <a href="#code" data-tab="code">Code</a>
+    <a href="#runs" data-tab="runs">Runs</a>
+    <a href="#wallet" data-tab="wallet">Wallet</a>
+  </nav>
+  <footer class="muted small">Charts by <a href="https://www.tradingview.com/" rel="noopener" target="_blank">TradingView Lightweight Charts™</a></footer>
+</body>
+</html>
