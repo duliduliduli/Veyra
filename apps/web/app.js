@@ -62,9 +62,9 @@ function fillTiles(dl, pairs) {
 
 function chartColors() {
   const css = getComputedStyle(document.documentElement);
-  return { fg: css.getPropertyValue("--muted").trim(), line: css.getPropertyValue("--line").trim(),
-    bg: css.getPropertyValue("--bg").trim(), accent: css.getPropertyValue("--accent").trim(),
-    good: css.getPropertyValue("--good").trim(), bad: css.getPropertyValue("--bad").trim() };
+  const v = (name) => css.getPropertyValue(name).trim();
+  return { ink: v("--fg"), muted: v("--muted"), line: v("--line"), bg: v("--panel"),
+    accent: v("--accent"), mono: v("--mono") };
 }
 
 function makeChart(id) {
@@ -72,8 +72,9 @@ function makeChart(id) {
   const c = chartColors();
   charts[id] = LightweightCharts.createChart($(id), {
     autoSize: true,
-    layout: { background: { color: c.bg }, textColor: c.fg, attributionLogo: true },
-    grid: { vertLines: { color: c.line }, horzLines: { color: c.line } },
+    layout: { background: { color: c.bg }, textColor: c.muted, fontFamily: c.mono, fontSize: 11,
+      attributionLogo: true },
+    grid: { vertLines: { color: c.line, style: 2 }, horzLines: { color: c.line, style: 2 } },
     timeScale: { borderColor: c.line }, rightPriceScale: { borderColor: c.line },
     // Vertical swipes scroll the page; horizontal drags pan the chart.
     handleScroll: { vertTouchDrag: false },
@@ -151,7 +152,9 @@ async function showMarkets() {
     const q = new URLSearchParams(start ? { start } : {});
     const { bars } = await api(`/v1/catalog/datasets/${id}/bars?${q}`);
     const chart = makeChart("market-chart");
-    charts.candles ??= chart.addCandlestickSeries();
+    const c = chartColors(); // rises in ink, falls in the signal color
+    charts.candles ??= chart.addCandlestickSeries({ upColor: c.bg, borderUpColor: c.ink,
+      wickUpColor: c.ink, downColor: c.accent, borderDownColor: c.accent, wickDownColor: c.accent });
     charts.candles.setData(bars.map((b) => ({ time: toTime(b.ts), open: +b.open, high: +b.high,
       low: +b.low, close: +b.close })));
     chart.timeScale().fitContent();
@@ -305,7 +308,8 @@ async function showRuns() {
   try {
     const { jobs } = await api(`/v1/orgs/${state.org}/jobs`);
     $("run-list").replaceChildren(...jobs.map((j) => el("li", {},
-      el("a", { href: `#run/${j.id}` }, `${j.outcome ?? j.state} · ${j.dataset_id}`,
+      el("a", { href: `#run/${j.id}`, class: ["failed", "incomplete"].includes(j.outcome) ? "alert" : "" },
+        `${j.outcome ?? j.state} · ${j.dataset_id}`,
         el("span", { class: "sub" }, `${when(j.created_at)} · ` + (j.charge_nano == null
           ? `up to ${usd(j.reserved_nano)} reserved` : `charged ${usd(j.charge_nano)}`))))));
     if (!jobs.length) $("run-list").append(el("li", { class: "muted" }, "No runs yet."));
@@ -362,7 +366,7 @@ async function showReport(job) {
     ["Sharpe (rf 0)", num(m.sharpe)], ["Trades", m.trade_count], ["Fees paid", num(m.total_fees)],
     ["Time in market", pct(m.exposure)]]);
   const chart = makeChart("equity-chart");
-  charts.equity ??= chart.addLineSeries({ color: chartColors().accent, lineWidth: 2 });
+  charts.equity ??= chart.addLineSeries({ color: chartColors().ink, lineWidth: 2 });
   charts.equity.setData(rep.equity_curve.map(([ts, v]) => ({ time: toTime(ts), value: +v })));
   chart.timeScale().fitContent();
   state.reportId = job.report_id;
