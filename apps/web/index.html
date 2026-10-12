@@ -8,7 +8,7 @@
   <title>Veyra</title>
   <link rel="stylesheet" href="app.css">
   <script src="vendor/lightweight-charts.standalone.production.js" defer></script>
-  <script src="app.js" defer></script>
+  <script src="app.js?v=guest-2" defer></script>
 </head>
 <body>
   <header class="top">
@@ -19,17 +19,7 @@
   <p id="status" class="status" role="status" aria-live="polite"></p>
 
   <main>
-    <section id="view-signin" class="view" hidden>
-      <h1>Sign in</h1>
-      <p class="muted">Local development sign-in. Production uses real accounts.</p>
-      <form id="signin-form">
-        <label for="signin-email">Email</label>
-        <input id="signin-email" type="email" autocomplete="email" required>
-        <button class="primary" type="submit">Continue</button>
-      </form>
-    </section>
-
-    <section id="view-markets" class="view" hidden>
+    <section id="view-markets" class="view">
       <h1>Markets</h1>
       <label for="market-dataset">Dataset</label>
       <select id="market-dataset"></select>

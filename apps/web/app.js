@@ -119,13 +119,6 @@ async function refreshBalance() {
   } catch (e) { fail(e); }
 }
 
-$("signin-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  state.user = $("signin-email").value.trim().toLowerCase();
-  localStorage.setItem("veyra.user", state.user);
-  try { await boot(); location.hash = "#markets"; route(); } catch (err) { fail(err); }
-});
-
 $("signout").addEventListener("click", () => {
   localStorage.removeItem("veyra.user");
   location.hash = "";
@@ -133,12 +126,12 @@ $("signout").addEventListener("click", () => {
 });
 
 // ---------------------------------------------------------------- routing
-const views = ["signin", "markets", "code", "project", "runs", "run", "wallet"];
+const views = [ "markets", "code", "project", "runs", "run", "wallet"];
 
 function route() {
   clearTimeout(state.pollTimer);
   const [name, arg] = location.hash.slice(1).split("/");
-  let view = views.includes(name) && name !== "signin" ? name : "markets";
+  let view = views.includes(name) ? name : "markets";
   if (!state.org) view = { project: "code", run: "runs" }[view] || view;
   for (const v of views) $(`view-${v}`).hidden = v !== view;
   const tab = { project: "code", run: "runs" }[view] || view;
