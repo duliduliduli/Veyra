@@ -8,7 +8,7 @@
   <title>Veyra</title>
   <link rel="stylesheet" href="app.css">
   <script src="vendor/lightweight-charts.standalone.production.js" defer></script>
-  <script src="app.js?v=guest-2" defer></script>
+  <script src="app.js?v=home-chart-1" defer></script>
 </head>
 <body>
   <header class="top">
@@ -20,17 +20,67 @@
 
   <main>
     <section id="view-markets" class="view">
-      <h1>Markets</h1>
-      <label for="market-dataset">Dataset</label>
-      <select id="market-dataset"></select>
-      <div class="chips" role="group" aria-label="Range">
+      <h1 class="sr-only">Markets</h1>
+      <div class="market-search-row">
+        <label for="asset-search" class="sr-only">Search assets</label>
+        <input id="asset-search" type="search" placeholder="Search assets…" autocomplete="off"
+          aria-controls="asset-results" aria-expanded="false">
+        <button id="browse-assets" type="button" aria-label="Browse assets" aria-haspopup="dialog">☰</button>
+        <div id="asset-results" class="asset-results" hidden></div>
+      </div>
+      <select id="market-dataset" aria-label="Selected dataset" hidden></select>
+      <div class="market-heading">
+        <div><strong id="market-symbol">Select an asset</strong><span id="market-source" class="sub">Historical · synthetic data</span></div>
+        <div class="market-quote"><strong id="market-price">—</strong><span id="market-change" class="sub"></span></div>
+      </div>
+      <div class="market-toolbar" role="group" aria-label="Chart controls">
+        <div class="intervals" role="group" aria-label="Candle interval">
+          <button type="button" data-interval="day" class="on" aria-pressed="true">1D</button>
+          <button type="button" data-interval="week" aria-pressed="false">1W</button>
+          <button type="button" data-interval="month" aria-pressed="false">1M</button>
+        </div>
+        <label for="chart-type" class="sr-only">Chart type</label>
+        <select id="chart-type"><option value="candles">Candles</option><option value="line">Line</option></select>
+        <button id="chart-volume" type="button" aria-pressed="true">Volume</button>
+        <button id="chart-sma" title="20-bar moving average of displayed candles" type="button" aria-pressed="false">SMA 20</button>
+      </div>
+      <div class="market-canvas">
+        <div class="drawing-tools" role="group" aria-label="Chart tools">
+          <button id="chart-crosshair" type="button" aria-label="Crosshair" title="Crosshair" aria-pressed="true">＋</button>
+          <button id="chart-trend" type="button" aria-label="Draw trend line" title="Draw trend line: select two chart points" aria-pressed="false">╱</button>
+          <button id="chart-clear" type="button" aria-label="Clear trend lines" title="Clear trend lines">⌫</button>
+          <button id="chart-zoom-in" type="button" aria-label="Zoom in" title="Zoom in">+</button>
+          <button id="chart-zoom-out" type="button" aria-label="Zoom out" title="Zoom out">−</button>
+          <button id="chart-reset" type="button" aria-label="Reset chart view" title="Reset chart view">↺</button>
+        </div>
+        <div id="market-chart" class="chart" role="img" aria-label="Historical synthetic candlestick price chart"></div>
+        <p id="chart-empty" class="chart-empty" role="status" hidden></p>
+      </div>
+      <div class="market-chart-foot">
+        <span id="chart-readout" class="small muted" aria-live="off">Crosshair shows OHLC · UTC</span>
+        <button id="chart-log" type="button" aria-pressed="false">Log</button>
+      </div>
+      <p id="market-meta" class="muted small" role="status"></p>
+      <div class="market-filters" role="group" aria-label="Date range">
+        <span class="sub">Range</span>
         <button type="button" data-range="90" aria-pressed="false">3M</button>
         <button type="button" data-range="365" class="on" aria-pressed="true">1Y</button>
         <button type="button" data-range="0" aria-pressed="false">All</button>
+        <span class="sub">UTC · historical</span>
       </div>
-      <div id="market-chart" class="chart" role="img" aria-label="Candlestick price chart"></div>
-      <p id="market-meta" class="muted small"></p>
-      <a class="button" href="#code">Backtest a strategy</a>
+      <dialog id="asset-browser" aria-labelledby="browse-title">
+        <div class="browse-heading"><h1 id="browse-title">Browse assets</h1><button id="close-browse" type="button" aria-label="Close browse assets">✕</button></div>
+        <label for="browse-search" class="sr-only">Search all assets</label>
+        <input id="browse-search" type="search" placeholder="Search assets…" autocomplete="off">
+        <p class="muted small">Synthetic historical datasets. Not live market prices.</p>
+        <ul id="browse-list" class="asset-list"></ul>
+        <div class="browse-filters">
+          <label for="browse-provider" class="sr-only">Data source</label>
+          <select id="browse-provider"><option value="">All sources</option></select>
+          <label for="browse-sort" class="sr-only">Sort assets</label>
+          <select id="browse-sort"><option value="name">Name A–Z</option><option value="name-desc">Name Z–A</option></select>
+        </div>
+      </dialog>
     </section>
 
     <section id="view-code" class="view" hidden>
