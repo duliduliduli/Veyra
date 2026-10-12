@@ -34,3 +34,7 @@ jobs:
       - run: uv run pytest
       - run: uv run node tests/e2e/home.mjs --logic-only
 
+      - run: node tests/e2e/studio-assistant.mjs
+      - run: node tests/e2e/workspace-store.mjs
+      - run: npm install --prefix /tmp/veyra-test-tools --no-save jsdom@26.1.0
+      - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/studio.mjs

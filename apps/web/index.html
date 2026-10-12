@@ -8,7 +8,9 @@
   <title>Veyra</title>
   <link rel="stylesheet" href="app.css">
   <script src="vendor/lightweight-charts.standalone.production.js" defer></script>
-  <script src="app.js?v=home-chart-1" defer></script>
+  <script src="workspace-store.js" defer></script>
+  <script src="studio-assistant.js" defer></script>
+  <script src="app.js?v=studio-1" defer></script>
 </head>
 <body>
   <header class="top">
@@ -98,19 +100,30 @@
     </section>
 
     <section id="view-code" class="view" hidden>
-      <h1>Strategies</h1>
+      <div class="section-heading"><h1>Python Studio</h1><span class="badge">Private workspace</span></div>
+      <p id="workspace-mode" class="note"></p>
       <form id="new-project-form" class="row">
         <label for="new-project-name" class="sr-only">New strategy name</label>
         <input id="new-project-name" placeholder="New strategy name" required maxlength="120">
         <button type="submit">Create</button>
       </form>
-      <p class="muted small">New strategies start from the moving-average template.</p>
+      <p class="muted small">Start with a blank Python strategy. Add a template from the assistant when you need one.</p>
+      <div class="row strategy-filters">
+        <div><label for="project-search">Find strategy</label><input id="project-search" type="search" placeholder="Search name or description"></div>
+        <div><label for="project-folder">Folder</label><select id="project-folder"><option value="">All folders</option></select></div>
+      </div>
       <ul id="project-list" class="cards"></ul>
     </section>
 
     <section id="view-project" class="view" hidden>
-      <h1 id="project-title">Strategy</h1>
-      <p class="muted small"><span id="project-version"></span> · <span id="draft-state"></span></p>
+      <div class="section-heading">
+        <div><a class="small" href="#code">← All strategies</a><h1 id="project-title">Strategy</h1></div>
+        <div class="compact-actions"><button type="button" id="project-settings">Settings</button><button type="button" id="duplicate-project">Duplicate</button></div>
+      </div>
+      <p id="project-storage" class="muted small"></p>
+      <div class="studio-layout">
+      <div class="studio-workbench">
+      <div class="editor-heading"><label for="editor-file">Python file</label><select id="editor-file"></select><span id="project-version" class="sub"></span></div>
       <div class="keys" role="toolbar" aria-label="Insert symbol">
         <button type="button" data-key="    ">Tab</button>
         <button type="button" data-key="(">(</button>
@@ -125,9 +138,24 @@
       <label for="editor" class="sr-only">strategy.py</label>
       <textarea id="editor" class="editor" spellcheck="false" autocapitalize="off"
                 autocomplete="off" autocorrect="off" wrap="off"></textarea>
-      <button type="button" id="save-version">Save version</button>
-
+      <div class="editor-footer"><span id="draft-state" class="small muted" role="status"></span><div class="compact-actions"><button type="button" id="recover-draft" hidden>Download recovered drafts</button><button type="button" id="download-code">Download .py</button><button type="button" id="save-version">Save version</button></div></div>
+      <section class="studio-assistant" aria-labelledby="assistant-title">
+        <div class="assistant-heading"><h2 id="assistant-title">Code assistant</h2><span class="badge">Built-in · offline</span></div>
+        <p class="muted small">No AI model is connected. This private helper offers tested Python templates and explicit parameter edits. It does not run your code.</p>
+        <ol id="assistant-messages" class="conversation" aria-label="Assistant conversation" aria-live="polite"></ol>
+        <div class="assistant-shortcuts"><button type="button" data-prompt="Create SMA crossover">SMA crossover</button><button type="button" data-prompt="Create buy and hold">Buy and hold</button><button type="button" data-prompt="Explain SDK">SDK help</button></div>
+        <form id="assistant-form" class="row"><label for="assistant-prompt" class="sr-only">Ask the built-in helper</label><input id="assistant-prompt" maxlength="500" placeholder="Try: set fast to 12" autocomplete="off" required><button type="submit">Ask</button></form>
+        <div id="assistant-proposal" class="proposal" hidden>
+          <p class="small">Review the proposed replacement for the current file. Applying keeps it as an unsaved edit.</p>
+          <div class="proposal-diff"><div><h3>Current</h3><pre id="assistant-before"></pre></div><div><h3>Proposed</h3><pre id="assistant-after"></pre></div></div>
+          <div class="compact-actions"><button type="button" id="assistant-apply">Apply edit</button><button type="button" id="assistant-dismiss">Dismiss</button></div>
+        </div>
+        <button type="button" id="assistant-undo" hidden>Undo last assistant edit</button>
+      </section>
+      </div>
+      <aside class="studio-run-panel">
       <h2>Backtest</h2>
+      <p id="backtest-availability" class="note" hidden></p>
       <form id="quote-form">
         <label for="bt-dataset">Data</label>
         <select id="bt-dataset"></select>
@@ -155,12 +183,26 @@
           The rest is returned to your balance. Synthetic data costs nothing.</p>
         <button class="primary" type="button" id="approve">Approve</button>
       </div>
+      <a id="strategy-runs-link" class="small" href="#runs" hidden>View strategy backtests</a>
+      </aside></div>
+      <dialog id="strategy-settings-dialog" aria-labelledby="settings-title">
+        <form id="strategy-settings-form">
+          <div class="section-heading"><h2 id="settings-title">Strategy settings</h2><button type="button" id="close-strategy-settings" aria-label="Close strategy settings">✕</button></div>
+          <label for="settings-name">Name</label><input id="settings-name" required maxlength="120">
+          <label for="settings-description">Description</label><textarea id="settings-description" maxlength="2000" rows="3"></textarea>
+          <label for="settings-folder">Folder</label><input id="settings-folder" maxlength="80" placeholder="Optional folder name">
+          <p class="note">Private. Public links and collaboration need connected accounts and are not enabled yet.</p>
+          <button type="submit">Save settings</button>
+        </form>
+      </dialog>
     </section>
 
     <section id="view-runs" class="view" hidden>
-      <h1>Runs</h1>
-      <p class="muted small">Runs keep going when you close the app.</p>
-      <ul id="run-list" class="cards"></ul>
+      <h1>Backtests</h1>
+      <p class="muted small">Grouped by strategy, newest activity first. Expand a strategy to see its dated runs.</p>
+      <p id="runs-scope" class="small muted"></p>
+      <ul id="run-list" class="cards run-groups"></ul>
+      <button type="button" id="load-more-runs" hidden>Load older runs</button>
     </section>
 
     <section id="view-run" class="view" hidden>
@@ -172,6 +214,7 @@
       <p id="run-error" class="error" hidden></p>
       <div id="run-report" hidden>
         <p id="run-note" class="note"></p>
+        <div id="run-profitability" class="profitability"><span class="sub">Percent profitable</span><strong id="run-profitability-value">Unavailable</strong><p id="run-profitability-definition" class="small muted"></p></div>
         <dl id="run-tiles" class="tiles"></dl>
         <h2>Equity</h2>
         <div id="equity-chart" class="chart short" role="img" aria-label="Equity curve"></div>
@@ -179,7 +222,8 @@
         <dl id="run-receipt" class="receipt"></dl>
         <div class="row">
           <button type="button" data-artifact="report.html">Full report</button>
-          <button type="button" data-artifact="trades.csv">Trades CSV</button>
+          <button type="button" data-artifact="trades.csv">Fills CSV</button>
+          <button type="button" data-artifact="report.json">Report JSON</button>
         </div>
       </div>
     </section>
@@ -202,8 +246,8 @@
 
   <nav class="tabs" aria-label="Main">
     <a href="#markets" data-tab="markets">Markets</a>
-    <a href="#code" data-tab="code">Code</a>
-    <a href="#runs" data-tab="runs">Runs</a>
+    <a href="#code" data-tab="code">Studio</a>
+    <a href="#runs" data-tab="runs">Backtests</a>
     <a href="#wallet" data-tab="wallet">Wallet</a>
   </nav>
   <footer class="muted small">Charts by <a href="https://www.tradingview.com/" rel="noopener" target="_blank">TradingView Lightweight Charts™</a></footer>

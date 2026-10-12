@@ -1,10 +1,12 @@
+import base64
+import binascii
 import json
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from pydantic import BaseModel, Field, field_validator
 from veyra_api import ledger
 from veyra_api.auth import CAN_RESEARCH, ROLES_ALL, Principal, audit, require
@@ -202,17 +204,63 @@ def _load_job(conn, p, job_id, allowed, lock=False):
 
 
 @router.get("/orgs/{org_id}/jobs")
-def list_jobs(org_id: UUID, p: Principal = CurrentUser, database=Depends(db)):
+def list_jobs(org_id: UUID, p: Principal = CurrentUser, database=Depends(db),
+              limit: Annotated[int, Query(ge=1, le=100)] = 50,
+              cursor: Annotated[str | None, Query(max_length=512)] = None,
+              project_id: UUID | None = None):
     with database.tx() as conn:
         require(conn, p, org_id, ROLES_ALL)
+        conditions, params = ["j.org_id = %s"], [org_id]
+        if project_id is not None:
+            conditions.append("v.project_id = %s")
+            params.append(project_id)
+        if cursor is not None:
+            try:
+                decoded = json.loads(base64.b64decode(cursor, altchars=b"-_", validate=True))
+                if (not isinstance(decoded, list) or len(decoded) != 2
+                        or not all(isinstance(value, str) for value in decoded)):
+                    raise ValueError("cursor must contain timestamp and ID strings")
+                stamp, job_id = decoded
+                stamp = datetime.fromisoformat(stamp)
+                job_id = UUID(job_id)
+                if stamp.tzinfo is None:
+                    raise ValueError("cursor timestamp must include a timezone")
+                stamp = stamp.astimezone(UTC)
+            except (ValueError, TypeError, OverflowError, binascii.Error) as exc:
+                raise HTTPException(422, "invalid history cursor") from exc
+            conditions.append("(j.created_at, j.id) < (%s, %s)")
+            params.extend((stamp, job_id))
+        params.append(limit + 1)
         rows = conn.execute(
             "SELECT j.id, j.state, j.outcome, j.progress, j.created_at, j.settled_at, "
+            "v.project_id, p.name AS project_name, j.project_version_id, v.version_no, "
+            "j.config->>'start' AS \"start\", j.config->>'end' AS \"end\", "
             "j.config->>'dataset_id' AS dataset_id, a.reserved_nano, "
-            "(j.receipt->>'customer_charge_nano')::bigint AS charge_nano, r.id AS report_id "
+            "(j.receipt->>'customer_charge_nano')::bigint AS charge_nano, "
+            "r.id AS report_id, r.metrics "
             "FROM jobs j JOIN authorizations a ON a.id = j.authorization_id "
-            "LEFT JOIN reports r ON r.job_id = j.id WHERE j.org_id = %s "
-            "ORDER BY j.created_at DESC LIMIT 50", (org_id,)).fetchall()
-    return {"jobs": rows}
+            "JOIN project_versions v ON v.id = j.project_version_id AND v.org_id = j.org_id "
+            "JOIN projects p ON p.id = v.project_id AND p.org_id = j.org_id "
+            "LEFT JOIN reports r ON r.job_id = j.id AND r.org_id = j.org_id WHERE "
+            + " AND ".join(conditions) + " ORDER BY j.created_at DESC, j.id DESC LIMIT %s",
+            params).fetchall()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        if rows:
+            counts = conn.execute(
+                "SELECT v.project_id, count(*) AS run_count FROM jobs j "
+                "JOIN project_versions v ON v.id = j.project_version_id AND v.org_id = j.org_id "
+                "WHERE j.org_id = %s AND v.project_id = ANY(%s) GROUP BY v.project_id",
+                (org_id, list({row["project_id"] for row in rows}))).fetchall()
+            counts = {row["project_id"]: row["run_count"] for row in counts}
+            for row in rows:
+                row["project_run_count"] = counts[row["project_id"]]
+    next_cursor = None
+    if has_more:
+        last = rows[-1]
+        next_cursor = base64.urlsafe_b64encode(json.dumps(
+            [last["created_at"].isoformat(), str(last["id"])]).encode()).decode()
+    return {"jobs": rows, "next_cursor": next_cursor, "has_more": has_more}
 
 
 @router.get("/jobs/{job_id}")
@@ -255,7 +303,7 @@ def get_report(report_id: UUID, p: Principal = CurrentUser, database=Depends(db)
 
 @router.get("/reports/{report_id}/artifacts/{name}")
 def get_artifact(report_id: UUID, name: str, p: Principal = CurrentUser,
-                 database=Depends(db), objects=Depends(store)):
+                 database=Depends(db), objects=Depends(store), download: bool = False):
     if name not in ARTIFACT_TYPES:
         raise HTTPException(404, "not found")
     with database.tx() as conn:
@@ -266,5 +314,7 @@ def get_artifact(report_id: UUID, name: str, p: Principal = CurrentUser,
     headers = {"X-Content-Type-Options": "nosniff",
                "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; "
                                           "sandbox"}
+    if download:
+        headers["Content-Disposition"] = f'attachment; filename="veyra-{report_id}-{name}"'
     return Response(objects.get(rep["artifacts"][name]["key"]), media_type=ARTIFACT_TYPES[name],
                     headers=headers)
