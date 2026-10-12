@@ -77,3 +77,13 @@ def test_lists_are_scoped_to_the_callers_org(api: Api):
     api.org(mallory)
     for path in (f"/v1/orgs/{org}/projects", f"/v1/orgs/{org}/jobs"):
         assert api.c.get(path, headers=mallory).status_code == 404
+
+
+def test_guest_catalog_does_not_unlock_private_routes(api: Api):
+    datasets = api.ok(api.c.get("/v1/catalog/datasets"))["datasets"]
+    assert datasets
+    dataset_id = datasets[0]["dataset_id"]
+    bars = api.ok(api.c.get(f"/v1/catalog/datasets/{dataset_id}/bars"))["bars"]
+    assert bars
+    assert api.c.get("/v1/me").status_code == 401
+    assert api.c.post("/v1/orgs", json={"name": "Guest"}).status_code == 401

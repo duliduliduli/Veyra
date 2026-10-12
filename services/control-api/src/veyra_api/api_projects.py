@@ -71,7 +71,7 @@ def _snapshot(conn, objects, p: Principal, org_id, project_id, files, entrypoint
 
 
 @router.get("/catalog/datasets")
-def catalog(p: Principal = CurrentUser):
+def catalog():
     out = []
     for spec in data.CATALOG.values():
         bars = data.generate_bars(spec)
@@ -89,8 +89,7 @@ def catalog(p: Principal = CurrentUser):
 
 
 @router.get("/catalog/datasets/{dataset_id}/bars")
-def bars(dataset_id: str, start: str | None = None, end: str | None = None,
-         p: Principal = CurrentUser):
+def bars(dataset_id: str, start: str | None = None, end: str | None = None):
     if dataset_id not in data.CATALOG:
         raise HTTPException(404, "not found")
     # Strings keep exact prices; clients convert only for drawing.

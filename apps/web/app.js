@@ -87,16 +87,27 @@ const isoDay = (d) => d.toISOString().slice(0, 10);
 
 // ---------------------------------------------------------------- session
 async function boot() {
-  if (!state.user) return;
-  const me = await api("/v1/me");
-  state.org = me.organizations[0]?.id ??
-    (await api("/v1/orgs", { method: "POST", body: { name: "My workspace" } })).id;
+  if (state.user) {
+    try {
+      const me = await api("/v1/me");
+      state.org = me.organizations[0]?.id ??
+        (await api("/v1/orgs", { method: "POST", body: { name: "My workspace" } })).id;
+    } catch (e) {
+      if (e.status !== 401) throw e;
+      localStorage.removeItem("veyra.user");
+      state.user = null;
+    }
+  }
   state.datasets = (await api("/v1/catalog/datasets")).datasets;
   for (const sel of [$("market-dataset"), $("bt-dataset")]) {
     sel.replaceChildren(...state.datasets.map((d) =>
       el("option", { value: d.dataset_id }, `${d.instrument_id} · daily · ${d.provider}`)));
   }
-  refreshBalance();
+  $("signout").hidden = !state.org;
+  for (const control of document.querySelectorAll("#new-project-form input, #new-project-form button, [data-topup]")) {
+    control.disabled = !state.org;
+  }
+  if (state.org) refreshBalance();
 }
 
 async function refreshBalance() {
@@ -127,7 +138,8 @@ const views = ["signin", "markets", "code", "project", "runs", "run", "wallet"];
 function route() {
   clearTimeout(state.pollTimer);
   const [name, arg] = location.hash.slice(1).split("/");
-  const view = !state.user ? "signin" : views.includes(name) ? name : "markets";
+  let view = views.includes(name) && name !== "signin" ? name : "markets";
+  if (!state.org) view = { project: "code", run: "runs" }[view] || view;
   for (const v of views) $(`view-${v}`).hidden = v !== view;
   const tab = { project: "code", run: "runs" }[view] || view;
   for (const a of document.querySelectorAll(".tabs a")) {
@@ -177,6 +189,10 @@ for (const b of document.querySelectorAll("[data-range]")) {
 
 // ---------------------------------------------------------------- projects & editor
 async function showProjects() {
+  if (!state.org) {
+    $("project-list").replaceChildren(el("li", { class: "muted" }, "Strategy saving and backtests are coming soon."));
+    return;
+  }
   try {
     const { projects } = await api(`/v1/orgs/${state.org}/projects`);
     $("project-list").replaceChildren(...projects.map((p) => el("li", {},
@@ -305,6 +321,10 @@ $("approve").addEventListener("click", (e) => busy(e.currentTarget, async () => 
 const outcomeClass = { completed: "good", failed: "bad", incomplete: "warn", cancelled: "warn" };
 
 async function showRuns() {
+  if (!state.org) {
+    $("run-list").replaceChildren(el("li", { class: "muted" }, "No runs yet. Backtests are coming soon."));
+    return;
+  }
   try {
     const { jobs } = await api(`/v1/orgs/${state.org}/jobs`);
     $("run-list").replaceChildren(...jobs.map((j) => el("li", {},
@@ -391,6 +411,11 @@ for (const b of document.querySelectorAll("[data-artifact]")) {
 
 // ---------------------------------------------------------------- wallet
 async function showWallet() {
+  if (!state.org) {
+    $("wallet-balance").replaceChildren();
+    $("usage-list").replaceChildren(el("li", { class: "muted" }, "Payments are not available yet."));
+    return;
+  }
   const b = await refreshBalance();
   if (!b) return;
   fillTiles($("wallet-balance"), [["Available", usd(b.available_nano, 4)],
