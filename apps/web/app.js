@@ -134,51 +134,309 @@ function route() {
   let view = views.includes(name) ? name : "markets";
   if (!state.org) view = { project: "code", run: "runs" }[view] || view;
   for (const v of views) $(`view-${v}`).hidden = v !== view;
+  document.body.classList.toggle("market-page", view === "markets");
+  if (view === "markets" && arg === "browse") openAssetBrowser();
+  if (view !== "markets" || arg !== "browse") {
+    hideAssetSearch();
+    if ($("asset-browser").open) $("asset-browser").close();
+  }
   const tab = { project: "code", run: "runs" }[view] || view;
   for (const a of document.querySelectorAll(".tabs a")) {
     if (a.dataset.tab === tab) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
   }
-  ({ markets: showMarkets, code: showProjects, project: () => showProject(arg),
+  ({ markets: () => { if (!marketBars.length) showMarkets(); }, code: showProjects, project: () => showProject(arg),
      runs: showRuns, run: () => showRun(arg), wallet: showWallet }[view] || (() => {}))();
 }
 window.addEventListener("hashchange", route);
 
 // ---------------------------------------------------------------- markets
 let marketRange = 365;
+let marketInterval = "day";
+let marketRequest = 0;
+let marketBars = [];
+const marketCache = new Map();
+const trendLines = [];
+let trendStart = null;
+
+const assetName = (d) => d.instrument_id.replace(/^SYNTH:/, "");
+const marketNumber = (v) => Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 });
+const dayChange = (bars) => bars.length > 1 && Number(bars.at(-2).close) !== 0
+  ? (Number(bars.at(-1).close) / Number(bars.at(-2).close) - 1) * 100 : null;
+const changeLabel = (v) => v == null ? "Daily change unavailable" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}% · last day`;
+
+async function assetBars(ds) {
+  if (!marketCache.has(ds.dataset_id)) {
+    const request = api(`/v1/catalog/datasets/${encodeURIComponent(ds.dataset_id)}/bars`)
+      .then(({ bars }) => bars).catch((error) => { marketCache.delete(ds.dataset_id); throw error; });
+    marketCache.set(ds.dataset_id, request);
+  }
+  return marketCache.get(ds.dataset_id);
+}
+
+function aggregateBars(bars, interval) {
+  const result = [];
+  let previousKey;
+  for (const b of bars) {
+    const date = new Date(b.ts);
+    if (interval === "week") date.setUTCDate(date.getUTCDate() - (date.getUTCDay() + 6) % 7);
+    const key = interval === "month" ? b.ts.slice(0, 7) : isoDay(date);
+    if (key !== previousKey) {
+      result.push({ time: toTime(b.ts), open: +b.open, high: +b.high, low: +b.low,
+        close: +b.close, volume: +b.volume });
+      previousKey = key;
+    } else {
+      const last = result.at(-1);
+      last.high = Math.max(last.high, +b.high);
+      last.low = Math.min(last.low, +b.low);
+      last.close = +b.close;
+      last.volume += +b.volume;
+    }
+  }
+  return result;
+}
+
+function clearTrends() {
+  const chart = charts["market-chart"];
+  trendLines.splice(0).forEach((line) => chart.removeSeries(line));
+  trendStart = null;
+}
+
+function marketChart() {
+  const chart = makeChart("market-chart");
+  if (charts.candles) return chart;
+  const c = chartColors();
+  charts.candles = chart.addCandlestickSeries({ upColor: c.bg, borderUpColor: c.ink,
+    wickUpColor: c.ink, downColor: c.accent, borderDownColor: c.accent, wickDownColor: c.accent });
+  charts.marketLine = chart.addLineSeries({ color: c.ink, lineWidth: 2, visible: false });
+  chart.priceScale("right").applyOptions({ scaleMargins: { top: 0.1, bottom: 0.23 } });
+  charts.volume = chart.addHistogramSeries({ priceFormat: { type: "volume" }, priceScaleId: "volume" });
+  chart.priceScale("volume").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 }, visible: false });
+  charts.sma = chart.addLineSeries({ color: c.accent, lineWidth: 1, visible: false,
+    lastValueVisible: false, priceLineVisible: false });
+  chart.subscribeCrosshairMove((param) => {
+    const b = param.seriesData.get(charts.candles);
+    const line = param.seriesData.get(charts.marketLine);
+    $("chart-readout").textContent = b
+      ? `O ${marketNumber(b.open)} H ${marketNumber(b.high)} L ${marketNumber(b.low)} C ${marketNumber(b.close)}`
+      : line ? `Close ${marketNumber(line.value)} · UTC` : "Crosshair shows OHLC · UTC";
+  });
+  chart.subscribeClick((param) => {
+    if ($("chart-trend").getAttribute("aria-pressed") !== "true" || !param.time || !param.point) return;
+    const active = $("chart-type").value === "line" ? charts.marketLine : charts.candles;
+    const price = active.coordinateToPrice(param.point.y);
+    if (price == null) return;
+    const point = { time: param.time, value: price };
+    if (!trendStart) { trendStart = point; $("chart-readout").textContent = "Select the second point"; return; }
+    if (point.time === trendStart.time) return;
+    const line = chart.addLineSeries({ color: c.accent, lineWidth: 2,
+      lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false });
+    line.setData([trendStart, point].sort((a, b) => a.time - b.time));
+    trendLines.push(line);
+    trendStart = null;
+    $("chart-trend").setAttribute("aria-pressed", "false");
+    $("chart-readout").textContent = "Trend line added · drawings reset when the asset changes";
+  });
+  return chart;
+}
+
+function renderMarketChart() {
+  const chart = marketChart();
+  const ds = state.datasets.find((d) => d.dataset_id === $("market-dataset").value);
+  const end = Date.parse(ds.coverage_end);
+  const filtered = marketRange ? marketBars.filter((b) => Date.parse(b.ts) >= end - marketRange * 864e5) : marketBars;
+  const bars = aggregateBars(filtered, marketInterval);
+  const c = chartColors();
+  charts.candles.setData(bars);
+  charts.marketLine.setData(bars.map((b) => ({ time: b.time, value: b.close })));
+  charts.volume.setData(bars.map((b) => ({ time: b.time, value: b.volume,
+    color: b.close >= b.open ? c.line : c.accent + "66" })));
+  charts.sma.setData(bars.slice(19).map((b, i) => ({ time: b.time,
+    value: bars.slice(i, i + 20).reduce((sum, item) => sum + item.close, 0) / 20 })));
+  chart.timeScale().fitContent();
+  $("chart-empty").hidden = !!bars.length;
+  $("chart-empty").textContent = "No bars for this range.";
+  $("market-chart").setAttribute("aria-label", `${assetName(ds)} historical synthetic ${$("chart-type").value} chart, ${marketInterval} intervals`);
+}
 
 async function showMarkets() {
-  const id = $("market-dataset").value;
-  const ds = state.datasets.find((d) => d.dataset_id === id);
-  if (!ds) return;
-  const end = ds.coverage_end.slice(0, 10);
-  const start = marketRange ? isoDay(new Date(Date.parse(end) - marketRange * 864e5)) : null;
+  const request = ++marketRequest;
+  const ds = state.datasets.find((d) => d.dataset_id === $("market-dataset").value);
+  if (!ds) {
+    $("chart-empty").hidden = false;
+    $("chart-empty").textContent = "No datasets available.";
+    return;
+  }
+  marketBars = [];
+  $("market-symbol").textContent = assetName(ds);
+  $("market-source").textContent = `${ds.provider} · historical`;
+  $("market-price").textContent = "—";
+  $("market-change").textContent = "";
+  $("market-meta").textContent = "Loading historical data…";
+  $("chart-empty").hidden = false;
+  $("chart-empty").textContent = "Loading chart…";
+  if (charts.candles) {
+    clearTrends();
+    for (const key of ["candles", "marketLine", "volume", "sma"]) charts[key].setData([]);
+  }
   try {
-    const q = new URLSearchParams(start ? { start } : {});
-    const { bars } = await api(`/v1/catalog/datasets/${id}/bars?${q}`);
-    const chart = makeChart("market-chart");
-    const c = chartColors(); // rises in ink, falls in the signal color
-    charts.candles ??= chart.addCandlestickSeries({ upColor: c.bg, borderUpColor: c.ink,
-      wickUpColor: c.ink, downColor: c.accent, borderDownColor: c.accent, wickDownColor: c.accent });
-    charts.candles.setData(bars.map((b) => ({ time: toTime(b.ts), open: +b.open, high: +b.high,
-      low: +b.low, close: +b.close })));
-    chart.timeScale().fitContent();
-    const last = bars.at(-1);
-    $("market-meta").textContent = `Last close ${last.close} ${ds.quote_currency} on ` +
-      `${last.ts.slice(0, 10)} (UTC) · Source: ${ds.provider} · ${ds.license}`;
-  } catch (e) { fail(e); }
+    const bars = await assetBars(ds);
+    if (request !== marketRequest) return;
+    marketBars = bars;
+    renderMarketChart();
+    const last = bars.at(-1), change = dayChange(bars);
+    $("market-price").textContent = last ? `${marketNumber(last.close)} ${ds.quote_currency}` : "—";
+    $("market-change").textContent = changeLabel(change);
+    $("market-price").parentElement.classList.toggle("loss", change < 0);
+    $("market-meta").textContent = last
+      ? `As of ${last.ts.slice(0, 10)} UTC · ${ds.license}` : "No bars in this dataset.";
+  } catch (e) {
+    if (request !== marketRequest) return;
+    $("chart-empty").hidden = false;
+    $("chart-empty").textContent = "Chart unavailable. Select the asset again to retry.";
+    $("market-meta").textContent = e.message;
+  }
 }
+
+function chooseAsset(id) {
+  $("market-dataset").value = id;
+  $("asset-search").value = "";
+  hideAssetSearch();
+  if ($("asset-browser").open) $("asset-browser").close();
+  showMarkets();
+}
+function matchingAssets(query, provider = "") {
+  const needle = query.trim().toLowerCase();
+  return state.datasets.filter((d) => (!provider || d.provider === provider) &&
+    `${d.instrument_id} ${d.dataset_id} ${d.provider}`.toLowerCase().includes(needle));
+}
+function hideAssetSearch() {
+  $("asset-results").hidden = true;
+  $("asset-search").setAttribute("aria-expanded", "false");
+}
+function searchAssets() {
+  const results = $("asset-results");
+  const assets = matchingAssets($("asset-search").value);
+  results.replaceChildren(...assets.map((d) => {
+    const button = el("button", { type: "button" }, `${assetName(d)} · ${d.provider}`);
+    button.addEventListener("click", () => chooseAsset(d.dataset_id));
+    return button;
+  }));
+  if (!assets.length) results.append(el("p", {}, "No matching assets."));
+  results.hidden = false;
+  $("asset-search").setAttribute("aria-expanded", "true");
+}
+$("asset-search").addEventListener("input", searchAssets);
+$("asset-search").addEventListener("focus", searchAssets);
+$("asset-search").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") hideAssetSearch();
+  if (e.key === "ArrowDown") { e.preventDefault(); $("asset-results").querySelector("button")?.focus(); }
+  if (e.key === "Enter") { e.preventDefault(); $("asset-results").querySelector("button")?.click(); }
+});
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".market-search-row")) hideAssetSearch();
+});
+$("asset-results").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { $("asset-search").focus(); hideAssetSearch(); }
+});
+
+function renderAssetBrowser() {
+  const list = $("browse-list");
+  const assets = matchingAssets($("browse-search").value, $("browse-provider").value)
+    .sort((a, b) => assetName(a).localeCompare(assetName(b)) * ($("browse-sort").value === "name-desc" ? -1 : 1));
+  list.replaceChildren(...assets.map((d) => {
+    const price = el("span", {}, "Loading…");
+    const change = el("span", { class: "asset-change" });
+    const button = el("button", { type: "button", "data-asset": d.dataset_id },
+      el("span", { class: "asset-top" }, el("span", { class: "asset-title" }, assetName(d)),
+        el("span", {}, price, change)),
+      el("span", { class: "asset-details" }, ...[
+        d.provider, "Daily bars", `${d.coverage_start.slice(0, 10)} – ${d.coverage_end.slice(0, 10)}`,
+      ].map((text) => el("span", {}, text))));
+    button.addEventListener("click", () => chooseAsset(d.dataset_id));
+    assetBars(d).then((bars) => {
+      const last = bars.at(-1), delta = dayChange(bars);
+      price.textContent = last ? `${marketNumber(last.close)} ${d.quote_currency}` : "No bars";
+      change.textContent = changeLabel(delta);
+      change.classList.toggle("loss", delta < 0);
+    }).catch(() => { price.textContent = "Price unavailable"; });
+    return el("li", {}, button);
+  }));
+  if (!assets.length) list.append(el("li", { class: "muted small" }, "No matching assets."));
+}
+function openAssetBrowser() {
+  hideAssetSearch();
+  const provider = $("browse-provider"), previous = provider.value;
+  provider.replaceChildren(el("option", { value: "" }, "All sources"),
+    ...[...new Set(state.datasets.map((d) => d.provider))].map((p) => el("option", { value: p }, p)));
+  provider.value = previous;
+  renderAssetBrowser();
+  if (!$("asset-browser").open) $("asset-browser").showModal();
+  $("browse-search").focus();
+}
+$("browse-assets").addEventListener("click", () => {
+  if (!$("asset-browser").open) history.pushState({ veyraBrowse: true }, "", "#markets/browse");
+  openAssetBrowser();
+});
+$("close-browse").addEventListener("click", () => $("asset-browser").close());
+$("asset-browser").addEventListener("close", () => {
+  if (location.hash === "#markets/browse") {
+    if (history.state?.veyraBrowse) history.back();
+    else history.replaceState(null, "", "#markets");
+  }
+  if (!$("view-markets").hidden) $("browse-assets").focus();
+});
+for (const id of ["browse-search", "browse-provider", "browse-sort"]) $(id).addEventListener("input", renderAssetBrowser);
 $("market-dataset").addEventListener("change", showMarkets);
-for (const b of document.querySelectorAll("[data-range]")) {
-  b.addEventListener("click", () => {
-    marketRange = Number(b.dataset.range);
-    document.querySelectorAll("[data-range]").forEach((x) => {
-      x.classList.toggle("on", x === b);
-      x.setAttribute("aria-pressed", String(x === b));
+for (const [selector, apply] of [
+  ["[data-range]", (b) => { marketRange = Number(b.dataset.range); }],
+  ["[data-interval]", (b) => { marketInterval = b.dataset.interval; clearTrends(); }],
+]) {
+  for (const b of document.querySelectorAll(selector)) b.addEventListener("click", () => {
+    apply(b);
+    document.querySelectorAll(selector).forEach((x) => {
+      x.classList.toggle("on", x === b); x.setAttribute("aria-pressed", String(x === b));
     });
-    showMarkets();
+    if (marketBars.length) renderMarketChart();
   });
 }
+$("chart-type").addEventListener("change", () => {
+  marketChart();
+  const candles = $("chart-type").value === "candles";
+  charts.candles.applyOptions({ visible: candles });
+  charts.marketLine.applyOptions({ visible: !candles });
+  $("market-chart").setAttribute("aria-label", `Historical synthetic ${candles ? "candlestick" : "line"} price chart`);
+});
+for (const [id, apply] of [
+  ["chart-volume", (on) => {
+    charts.volume.applyOptions({ visible: on });
+    charts["market-chart"].priceScale("right").applyOptions({ scaleMargins: { top: 0.1, bottom: on ? 0.23 : 0.1 } });
+  }],
+  ["chart-sma", (on) => {
+    charts.sma.applyOptions({ visible: on });
+    if (on && !charts.sma.data().length) $("chart-readout").textContent = "SMA 20 needs at least 20 displayed bars. Try a longer range.";
+  }],
+  ["chart-log", (on) => charts["market-chart"].priceScale("right").applyOptions({ mode: on ? 1 : 0 })],
+  ["chart-crosshair", (on) => charts["market-chart"].applyOptions({ crosshair: { mode: on ? 1 : 2 } })],
+  ["chart-trend", (on) => { trendStart = null; $("chart-readout").textContent = on ? "Select two chart points" : "Crosshair shows OHLC · UTC"; }],
+]) $(id).addEventListener("click", () => {
+  marketChart();
+  const on = $(id).getAttribute("aria-pressed") !== "true";
+  $(id).setAttribute("aria-pressed", String(on));
+  apply(on);
+});
+$("chart-clear").addEventListener("click", clearTrends);
+$("chart-reset").addEventListener("click", () => {
+  if (!charts["market-chart"]) return;
+  charts["market-chart"].timeScale().fitContent();
+  charts["market-chart"].priceScale("right").applyOptions({ autoScale: true });
+});
+for (const [id, factor] of [["chart-zoom-in", 0.75], ["chart-zoom-out", 1.35]]) $(id).addEventListener("click", () => {
+  const scale = charts["market-chart"]?.timeScale(), range = scale?.getVisibleLogicalRange();
+  if (!range) return;
+  const middle = (range.from + range.to) / 2, half = Math.max(2, (range.to - range.from) * factor / 2);
+  scale.setVisibleLogicalRange({ from: middle - half, to: middle + half });
+});
 
 // ---------------------------------------------------------------- projects & editor
 async function showProjects() {
