@@ -355,9 +355,10 @@ def test_two_reapers_skip_each_others_locks_and_settle_healthy_records_once(
             # Both transactions already own a different candidate's row lock.
             barrier.wait(timeout=5)
 
-    watch_candidates(monkeypatch, active, synchronize)
     database = ScopedDatabase(app.state.db, batch)
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    # The main-thread idempotency pass must not enter the two-worker rendezvous.
+    with monkeypatch.context() as patch, ThreadPoolExecutor(max_workers=2) as pool:
+        watch_candidates(patch, active, synchronize)
         futures = [pool.submit(recover(active), database, batch_size=4) for _ in range(2)]
         recovered = [value for future in futures for value in future.result(timeout=20)]
     assert len(first_locked) == len(set(first_locked)) == 2

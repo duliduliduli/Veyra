@@ -133,7 +133,10 @@ def test_mock_public_read_is_allowlisted_and_every_response_is_no_store(mock_pub
     assert_no_store(client.get("/v1/public/strategies/not-a-uuid"), 422)
     assert_no_store(client.get("/v1/public/strategies?limit=101"), 422)
     assert_no_store(client.get("/v1/public/strategies?offset=-1"), 422)
-    assert_no_store(client.get("/v1/public/strategies", params={"q": "bad\x00query"}), 422)
+    for query in ("bad\x00query", "value = 1\n", "bad\rquery", "bad\tquery"):
+        conn.execute.reset_mock()
+        assert_no_store(client.get("/v1/public/strategies", params={"q": query}), 422)
+        conn.execute.assert_not_called()
     assert_no_store(client.patch(path, json={"title": "Changed"}), 405)
 
 
@@ -338,7 +341,8 @@ def test_never_published_projects_are_absent_and_private_fields_are_not_searchab
         assert api.ok(api.c.get("/v1/public/strategies", params={"q": needle}))["strategies"] == []
     receipt = assert_no_store(publish(api, owner, project), 201)
     for needle in (project["name"], project["description"], project["folder"],
-                   owner["x-veyra-dev-user"], FILES["helpers.py"]):
+                   owner["x-veyra-dev-user"], FILES["helpers.py"].rstrip("\n")):
+        # Query syntax excludes line breaks; use the valid source-text search term.
         assert api.ok(api.c.get("/v1/public/strategies", params={"q": needle}))["strategies"] == []
     assert_no_store(api.c.get(f"/v1/public/strategies/{project['id']}"), 404)
     assert_no_store(api.c.get(f"/v1/public/strategies/{project['latest_version']['id']}"), 404)
