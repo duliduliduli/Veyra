@@ -152,7 +152,7 @@ window.addEventListener("hashchange", route);
 
 // ---------------------------------------------------------------- markets
 let marketRange = 365;
-let marketInterval = "day";
+let marketInterval = "1d";
 let marketRequest = 0;
 let marketBars = [];
 const marketCache = new Map();
@@ -175,14 +175,20 @@ async function assetBars(ds) {
 }
 
 function aggregateBars(bars, interval) {
+  // Daily source bars cannot produce intraday candles; never fall back to daily.
+  if (!["1d", "3d", "1w", "1M", "30w"].includes(interval)) return [];
+  const days = { "1d": 1, "3d": 3, "1w": 7, "30w": 210 }[interval];
+  const width = days * 864e5;
+  // Fixed UTC buckets: days from the Unix epoch, weeks from Monday 1970-01-05.
+  const origin = interval.endsWith("w") ? Date.UTC(1970, 0, 5) : 0;
   const result = [];
   let previousKey;
   for (const b of bars) {
     const date = new Date(b.ts);
-    if (interval === "week") date.setUTCDate(date.getUTCDate() - (date.getUTCDay() + 6) % 7);
-    const key = interval === "month" ? b.ts.slice(0, 7) : isoDay(date);
+    const key = interval === "1M" ? Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1)
+      : origin + Math.floor((date.getTime() - origin) / width) * width;
     if (key !== previousKey) {
-      result.push({ time: toTime(b.ts), open: +b.open, high: +b.high, low: +b.low,
+      result.push({ time: key / 1000, open: +b.open, high: +b.high, low: +b.low,
         close: +b.close, volume: +b.volume });
       previousKey = key;
     } else {
@@ -205,6 +211,10 @@ function clearTrends() {
 function marketChart() {
   const chart = makeChart("market-chart");
   if (charts.candles) return chart;
+  const toolbar = document.querySelector(".market-toolbar");
+  const selected = toolbar.querySelector('[data-interval][aria-pressed="true"]');
+  toolbar.scrollLeft += selected.getBoundingClientRect().left - toolbar.getBoundingClientRect().left
+    - (toolbar.clientWidth - selected.clientWidth) / 2;
   const c = chartColors();
   charts.candles = chart.addCandlestickSeries({ upColor: c.bg, borderUpColor: c.ink,
     wickUpColor: c.ink, downColor: c.accent, borderDownColor: c.accent, wickDownColor: c.accent });
@@ -244,8 +254,11 @@ function renderMarketChart() {
   const chart = marketChart();
   const ds = state.datasets.find((d) => d.dataset_id === $("market-dataset").value);
   const end = Date.parse(ds.coverage_end);
-  const filtered = marketRange ? marketBars.filter((b) => Date.parse(b.ts) >= end - marketRange * 864e5) : marketBars;
-  const bars = aggregateBars(filtered, marketInterval);
+  const aggregated = aggregateBars(marketBars, marketInterval);
+  // Keep complete candles that overlap the range; changing range must not change OHLC.
+  const cutoff = (end - marketRange * 864e5) / 1000;
+  const bars = marketRange ? aggregated.filter((b, i) =>
+    (aggregated[i + 1]?.time ?? end / 1000 + 86400) > cutoff) : aggregated;
   const c = chartColors();
   charts.candles.setData(bars);
   charts.marketLine.setData(bars.map((b) => ({ time: b.time, value: b.close })));
@@ -393,6 +406,7 @@ for (const [selector, apply] of [
   ["[data-interval]", (b) => { marketInterval = b.dataset.interval; clearTrends(); }],
 ]) {
   for (const b of document.querySelectorAll(selector)) b.addEventListener("click", () => {
+    if (b.disabled) return;
     apply(b);
     document.querySelectorAll(selector).forEach((x) => {
       x.classList.toggle("on", x === b); x.setAttribute("aria-pressed", String(x === b));
@@ -698,3 +712,4 @@ for (const b of document.querySelectorAll("[data-topup]")) {
   }
   route();
 })();
+

@@ -34,16 +34,30 @@
         <div class="market-quote"><strong id="market-price">—</strong><span id="market-change" class="sub"></span></div>
       </div>
       <div class="market-toolbar" role="group" aria-label="Chart controls">
-        <div class="intervals" role="group" aria-label="Candle interval">
-          <button type="button" data-interval="day" class="on" aria-pressed="true">1D</button>
-          <button type="button" data-interval="week" aria-pressed="false">1W</button>
-          <button type="button" data-interval="month" aria-pressed="false">1M</button>
+        <div class="intervals" role="group" aria-label="Candle interval" aria-describedby="interval-help">
+          <button type="button" data-interval="1m" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">1m</button>
+          <button type="button" data-interval="3m" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">3m</button>
+          <button type="button" data-interval="5m" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">5m</button>
+          <button type="button" data-interval="10m" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">10m</button>
+          <button type="button" data-interval="15m" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">15m</button>
+          <button type="button" data-interval="30m" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">30m</button>
+          <button type="button" data-interval="1hr" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">1hr</button>
+          <button type="button" data-interval="3hr" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">3hr</button>
+          <button type="button" data-interval="4hr" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">4hr</button>
+          <button type="button" data-interval="8hr" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">8hr</button>
+          <button type="button" data-interval="12hr" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">12hr</button>
+          <button type="button" data-interval="1d" class="on" aria-pressed="true">1d</button>
+          <button type="button" data-interval="3d" aria-pressed="false">3d</button>
+          <button type="button" data-interval="1w" aria-pressed="false">1w</button>
+          <button type="button" data-interval="1M" aria-pressed="false" title="Calendar month · UTC">1M</button>
+          <button type="button" data-interval="30w" aria-pressed="false" title="30 weeks · 210 days · UTC">30w</button>
         </div>
         <label for="chart-type" class="sr-only">Chart type</label>
         <select id="chart-type"><option value="candles">Candles</option><option value="line">Line</option></select>
         <button id="chart-volume" type="button" aria-pressed="true">Volume</button>
         <button id="chart-sma" title="20-bar moving average of displayed candles" type="button" aria-pressed="false">SMA 20</button>
       </div>
+      <p id="interval-help" class="muted small">Minute and hour intervals are unavailable: this synthetic feed only has daily bars.</p>
       <div class="market-canvas">
         <div class="drawing-tools" role="group" aria-label="Chart tools">
           <button id="chart-crosshair" type="button" aria-label="Crosshair" title="Crosshair" aria-pressed="true">＋</button>
@@ -195,3 +209,4 @@
   <footer class="muted small">Charts by <a href="https://www.tradingview.com/" rel="noopener" target="_blank">TradingView Lightweight Charts™</a></footer>
 </body>
 </html>
+

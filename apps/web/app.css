@@ -137,7 +137,10 @@ body.market-page footer { display: none; }
 .market-quote.loss, .asset-change.loss { color: var(--accent-text); }
 .market-toolbar { display: flex; gap: 0; overflow-x: auto; flex-shrink: 0; border-block: 1px solid var(--line); }
 .market-toolbar button, .market-toolbar select { white-space: nowrap; border: 0; border-right: 1px solid var(--line); min-height: 44px; padding: 8px 12px; font-size: .68rem; background: var(--panel); width: auto; }
-.intervals { display: flex; }
+.intervals { display: flex; flex-shrink: 0; }
+.intervals button { text-transform: none; }
+.intervals button:disabled { cursor: not-allowed; }
+#interval-help { margin: 0; padding: 5px 12px; font-size: .6rem; letter-spacing: 0; }
 #view-markets button[aria-pressed="true"] { background: var(--soft); color: var(--fg); box-shadow: inset 0 -2px var(--accent); }
 .market-canvas { display: flex; position: relative; flex: 1; min-height: 150px; }
 .drawing-tools { flex: 0 0 44px; display: flex; flex-direction: column; overflow-y: auto; border-right: 1px solid var(--line); }
@@ -181,3 +184,4 @@ body.market-page footer { display: none; }
   .market-heading strong { font-size: 1.1rem; }
 }
 @media (max-height: 650px) { #view-markets { min-height: 420px; } }
+

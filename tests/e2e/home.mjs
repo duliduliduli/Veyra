@@ -41,24 +41,72 @@ print(json.dumps({'datasets': datasets, 'series': series}, default=str))
     join(root, 'runtimes/simulator/src'), process.env.PYTHONPATH].filter(Boolean).join(':') },
 }));
 
+const intervals = ['1m', '3m', '5m', '10m', '15m', '30m', '1hr', '3hr', '4hr', '8hr', '12hr', '1d', '3d', '1w', '1M', '30w'];
+const availableIntervals = intervals.slice(11);
+
 if (logicOnly) {
   const source = await readFile(join(root, 'apps/web/app.js'), 'utf8');
   const start = source.indexOf('function aggregateBars('), end = source.indexOf('\nfunction clearTrends(');
-  assert.ok(start > 0 && end > start, 'Aggregation function must be found in the app');
-  const aggregate = runInNewContext(`${source.slice(start, end)}; aggregateBars`, {
-    toTime: (ts) => Date.parse(ts) / 1000, isoDay: (date) => date.toISOString().slice(0, 10),
-  });
+  const renderStart = source.indexOf('function renderMarketChart('), renderEnd = source.indexOf('\nasync function showMarkets(');
+  assert.ok(start > 0 && end > start && renderEnd > renderStart, 'Chart functions must be found');
+  let rendered;
+  const context = {
+    state: { datasets: fixtures.datasets }, marketBars: [], marketRange: 0, marketInterval: '1d',
+    $: (id) => ({ value: id === 'market-dataset' ? context.datasetId : 'candles', setAttribute() {} }),
+    charts: Object.fromEntries(['candles', 'marketLine', 'volume', 'sma'].map((key) =>
+      [key, { setData: (bars) => { if (key === 'candles') rendered = bars; } }])),
+    marketChart: () => ({ timeScale: () => ({ fitContent() {} }) }),
+    chartColors: () => ({ line: '#ccc', accent: '#f60' }), assetName: (ds) => ds.instrument_id,
+  };
+  const { aggregate, render } = runInNewContext(`${source.slice(start, end)}; ${source.slice(renderStart, renderEnd)};
+    ({ aggregate: aggregateBars, render: renderMarketChart })`, context);
+  const plain = (value) => JSON.parse(JSON.stringify(value));
   for (const { dataset_id: id } of fixtures.datasets) {
+    context.datasetId = id;
+    context.marketBars = fixtures.series[id];
     for (const days of [90, 365, 0]) {
-      const cutoff = Date.parse(fixtures.series[id].at(-1).ts) - days * 864e5;
-      const bars = fixtures.series[id].filter((bar) => !days || Date.parse(bar.ts) >= cutoff);
-      for (const interval of ['day', 'week', 'month']) {
-        assert.deepEqual(JSON.parse(JSON.stringify(aggregate(bars, interval))), expectedBars(id, days, interval));
+      context.marketRange = days;
+      for (const interval of availableIntervals) {
+        context.marketInterval = interval;
+        render();
+        assert.deepEqual(plain(rendered), expectedBars(id, days, interval));
       }
     }
   }
-  assert.deepEqual(JSON.parse(JSON.stringify(aggregate([], 'month'))), []);
-  console.log('Aggregation passed for both synthetic assets, all 3 ranges and all 3 intervals, plus empty input.');
+  const fixture = (dates) => dates.map((date, i) => ({ ts: date + 'T00:00:00Z',
+    open: String(10 + i), high: String(20 + i), low: String(5 + i), close: String(15 + i), volume: '2' }));
+  const dates = (bars) => bars.map((bar) => new Date(bar.time * 1000).toISOString().slice(0, 10));
+  const check = (input, interval, starts, volumes) => {
+    const bars = plain(aggregate(fixture(input), interval));
+    assert.deepEqual(dates(bars), starts);
+    assert.deepEqual(bars.map((bar) => bar.volume), volumes);
+    return bars;
+  };
+  const monthly = check(['2024-01-31', '2024-02-01', '2024-02-28', '2024-02-29', '2024-03-01'],
+    '1M', ['2024-01-01', '2024-02-01', '2024-03-01'], [2, 6, 2]);
+  assert.deepEqual(monthly[1], { time: Date.parse('2024-02-01') / 1000, open: 11, high: 23, low: 6, close: 18, volume: 6 });
+  check(['2023-12-31', '2024-01-01', '2024-01-07', '2024-01-08'],
+    '1w', ['2023-12-25', '2024-01-01', '2024-01-08'], [2, 4, 2]);
+  check(['1970-01-01', '1970-01-03', '1970-01-04', '1970-01-06', '1970-01-07'],
+    '3d', ['1970-01-01', '1970-01-04', '1970-01-07'], [4, 4, 2]);
+  check(['1970-01-04', '1970-01-05', '1970-08-02', '1970-08-03'],
+    '30w', ['1969-06-09', '1970-01-05', '1970-08-03'], [2, 4, 2]);
+  for (const interval of [...availableIntervals, ...intervals.slice(0, 11), 'unknown']) {
+    assert.deepEqual(plain(aggregate([], interval)), []);
+  }
+  for (const interval of [...intervals.slice(0, 11), 'unknown']) {
+    assert.deepEqual(plain(aggregate(fixtures.series[fixtures.datasets[0].dataset_id], interval)), [],
+      `${interval} must never silently display daily candles`);
+  }
+  const html = await readFile(join(root, 'apps/web/index.html'), 'utf8');
+  const buttons = [...html.matchAll(/<button[^>]*data-interval="([^"]+)"([^>]*)>([^<]+)<\/button>/g)];
+  assert.deepEqual(buttons.map((button) => button[1]), intervals);
+  assert.deepEqual(buttons.map((button) => button[3]), intervals);
+  assert.deepEqual(buttons.filter((button) => / disabled/.test(button[2])).map((button) => button[1]), intervals.slice(0, 11));
+  assert.match(html, /id="interval-help"[^>]*>Minute and hour intervals are unavailable/);
+  const css = await readFile(join(root, 'apps/web/app.css'), 'utf8');
+  assert.match(css, /\.intervals button \{ text-transform: none; \}/, 'Keep 1m distinct from 1M');
+  console.log('Passed 30 fixture/range/interval checks, exact labels/order, disabled intraday, UTC boundaries, leap month, 210-day weeks, empty and unknown inputs.');
   process.exit(0);
 }
 
@@ -128,25 +176,32 @@ async function chartData(page) {
     range: charts['market-chart'].timeScale().getVisibleLogicalRange() }));
 }
 
-function expectedBars(id, days, interval = 'day') {
-  const source = fixtures.series[id], end = Date.parse(source.at(-1).ts), groups = new Map();
-  for (const bar of source.filter((bar) => !days || Date.parse(bar.ts) >= end - days * 864e5)) {
+function expectedBars(id, days, interval = '1d') {
+  const source = fixtures.series[id], cutoff = Date.parse(source.at(-1).ts) - days * 864e5, groups = new Map();
+  for (const bar of source) {
     const timestamp = Date.parse(bar.ts), date = new Date(timestamp);
-    const weekStart = timestamp - ((date.getUTCDay() + 6) % 7) * 864e5;
-    const key = interval === 'month' ? bar.ts.slice(0, 7) : interval === 'week' ? weekStart : timestamp;
+    const day = timestamp / 864e5;
+    let key;
+    if (interval === '1M') key = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
+    else if (interval === '1w') key = timestamp - ((date.getUTCDay() + 6) % 7) * 864e5;
+    else if (interval === '30w') key = (day - ((day - 4) % 210 + 210) % 210) * 864e5;
+    else if (interval === '3d') key = (day - (day % 3 + 3) % 3) * 864e5;
+    else key = timestamp;
     const group = groups.get(key);
     if (group) {
       group.high = Math.max(group.high, +bar.high);
       group.low = Math.min(group.low, +bar.low);
       group.close = +bar.close;
       group.volume += +bar.volume;
-    } else groups.set(key, { time: timestamp / 1000, open: +bar.open, high: +bar.high,
-      low: +bar.low, close: +bar.close, volume: +bar.volume });
+      group.lastTime = timestamp;
+    } else groups.set(key, { time: key / 1000, open: +bar.open, high: +bar.high,
+      low: +bar.low, close: +bar.close, volume: +bar.volume, lastTime: timestamp });
   }
-  return [...groups.values()];
+  return [...groups.values()].filter((bar) => !days || bar.lastTime >= cutoff)
+    .map(({ lastTime, ...bar }) => bar);
 }
 
-async function checkChartData(page, days, interval = 'day', id = fixtures.datasets[0].dataset_id) {
+async function checkChartData(page, days, interval = '1d', id = fixtures.datasets[0].dataset_id) {
   const actual = await chartData(page), expected = expectedBars(id, days, interval);
   assert.deepEqual(actual.candles.map(({ time, open, high, low, close }) => ({ time, open, high, low, close })),
     expected.map(({ time, open, high, low, close }) => ({ time, open, high, low, close })));
@@ -175,6 +230,17 @@ try {
       assert.match(await page.textContent('#market-symbol'), /BTC/);
       assert.match(await page.textContent('#market-meta'), /synthetic/i);
       await checkChartData(page, 365);
+      const selectedVisible = await page.locator('[data-interval="1d"]').evaluate((button) => {
+        const selected = button.getBoundingClientRect(), toolbar = button.closest('.market-toolbar').getBoundingClientRect();
+        return selected.left >= toolbar.left && selected.right <= toolbar.right;
+      });
+      assert.equal(selectedVisible, true, 'The selected daily interval must be visible on first load');
+      assert.deepEqual(await page.locator('[data-interval]').allTextContents(), intervals);
+      for (const interval of intervals.slice(0, 11)) {
+        assert.equal(await page.locator(`[data-interval="${interval}"]`).isDisabled(), true);
+      }
+      assert.equal(await page.locator('#interval-help').isVisible(), true);
+      assert.equal(await page.locator('[data-interval="1m"]').evaluate((button) => getComputedStyle(button).textTransform), 'none');
       await checkLayout(page, `${name}-home`);
 
       // Search, no-match recovery, selecting a result, and dismissal.
@@ -184,7 +250,7 @@ try {
       await page.locator('#asset-results button').click();
       await page.waitForFunction(() => document.querySelector('#market-symbol').textContent.includes('ETH'));
       await page.waitForFunction(() => document.querySelector('#market-meta').textContent.startsWith('As of'));
-      await checkChartData(page, 365, 'day', fixtures.datasets[1].dataset_id);
+      await checkChartData(page, 365, '1d', fixtures.datasets[1].dataset_id);
       assert.equal(await page.isVisible('#asset-results'), false);
       await page.fill('#asset-search', 'no-such-market');
       assert.equal(await page.locator('#asset-results button').count(), 0);
@@ -237,7 +303,7 @@ try {
         await checkChartData(page, Number(range));
       }
 
-      for (const interval of ['week', 'month', 'day']) {
+      for (const interval of ['3d', '1w', '1M', '30w', '1d']) {
         await page.click(`[data-interval="${interval}"]`);
         assert.equal(await page.getAttribute(`[data-interval="${interval}"]`, 'aria-pressed'), 'true');
         await checkChartData(page, 365, interval);
@@ -329,10 +395,10 @@ try {
   await race.page.fill('#asset-search', 'eth');
   await race.page.keyboard.press('Enter');
   await race.page.waitForFunction(() => document.querySelector('#market-meta').textContent.startsWith('As of'));
-  await checkChartData(race.page, 90, 'day', fixtures.datasets[1].dataset_id);
+  await checkChartData(race.page, 90, '1d', fixtures.datasets[1].dataset_id);
   releaseBTC();
   await race.page.evaluate(() => marketCache.get('synth-btcusd-1d-v1').then(() => undefined));
-  await checkChartData(race.page, 90, 'day', fixtures.datasets[1].dataset_id);
+  await checkChartData(race.page, 90, '1d', fixtures.datasets[1].dataset_id);
   assert.match(await race.page.textContent('#market-symbol'), /ETH/);
   assert.deepEqual(race.errors, []);
   await race.context.close();
@@ -353,7 +419,7 @@ try {
   });
   await emptyBars.page.waitForFunction(() => document.querySelector('#market-meta').textContent === 'No bars in this dataset.');
   assert.equal((await chartData(emptyBars.page)).candles.length, 0);
-  for (const selector of ['[data-range="0"]', '[data-interval="month"]', '#chart-volume', '#chart-sma', '#chart-log']) {
+  for (const selector of ['[data-range="0"]', '[data-interval="1M"]', '#chart-volume', '#chart-sma', '#chart-log']) {
     await emptyBars.page.click(selector);
   }
   assert.equal(await emptyBars.page.isVisible('#chart-empty'), true);
@@ -391,3 +457,4 @@ try {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));
 }
+
