@@ -104,7 +104,7 @@ async function boot() {
       el("option", { value: d.dataset_id }, `${d.instrument_id} · daily · ${d.provider}`)));
   }
   $("signout").hidden = !state.org;
-  for (const control of document.querySelectorAll("#new-project-form input, #new-project-form button, [data-topup]")) {
+  for (const control of document.querySelectorAll("[data-topup]")) {
     control.disabled = !state.org;
   }
   if (state.org) refreshBalance();
@@ -132,9 +132,13 @@ function route() {
   clearTimeout(state.pollTimer);
   const [name, arg] = location.hash.slice(1).split("/");
   let view = views.includes(name) ? name : "markets";
-  if (!state.org) view = { project: "code", run: "runs" }[view] || view;
+  if (!state.org && view === "run") view = "runs";
+  if (!state.org && view === "project" && !isLocalProject(arg)) view = "code";
   for (const v of views) $(`view-${v}`).hidden = v !== view;
   document.body.classList.toggle("market-page", view === "markets");
+  document.body.classList.toggle("studio-page", view === "project");
+  if (view !== "project") { projectLoad++; state.project = null; }
+  if (view !== "project" && $("strategy-settings-dialog").open) $("strategy-settings-dialog").close();
   if (view === "markets" && arg === "browse") openAssetBrowser();
   if (view !== "markets" || arg !== "browse") {
     hideAssetSearch();
@@ -146,7 +150,7 @@ function route() {
     else a.removeAttribute("aria-current");
   }
   ({ markets: () => { if (!marketBars.length) showMarkets(); }, code: showProjects, project: () => showProject(arg),
-     runs: showRuns, run: () => showRun(arg), wallet: showWallet }[view] || (() => {}))();
+     runs: () => showRuns(arg), run: () => showRun(arg), wallet: showWallet }[view] || (() => {}))();
 }
 window.addEventListener("hashchange", route);
 
@@ -453,107 +457,312 @@ for (const [id, factor] of [["chart-zoom-in", 0.75], ["chart-zoom-out", 1.35]]) 
 });
 
 // ---------------------------------------------------------------- projects & editor
-async function showProjects() {
-  if (!state.org) {
-    $("project-list").replaceChildren(el("li", { class: "muted" }, "Strategy saving and backtests are coming soon."));
-    return;
+const localWorkspace = VeyraWorkspaceStore.create(localStorage);
+let projectRows = [], projectLoad = 0, fileName = null, assistantProposal = null, assistantUndo = null;
+const isLocalProject = (id) => String(id).startsWith("local-");
+const currentProjectRoute = (id) => location.hash === `#project/${id}`;
+async function localWrite(operation) {
+  if (!navigator.locks?.request) throw new Error("This browser cannot safely coordinate saved strategies across tabs. Use a current browser with Web Locks, or download your code as a backup.");
+  return navigator.locks.request("veyra.workspace.v1", { mode: "exclusive" }, operation);
+}
+const blankStrategy = VeyraStudioAssistant.templates.blank;
+
+async function projectRequest(id, action, body) {
+  if (isLocalProject(id)) {
+    if (action === "get") return localWorkspace.getProject(id);
+    if (action === "version") return localWorkspace.getVersion(id, body);
+    if (action === "save") return localWrite(() => localWorkspace.saveVersion(id, body));
+    if (action === "settings") return localWrite(() => localWorkspace.updateProject(id, body));
+    if (action === "duplicate") return localWrite(() => localWorkspace.duplicateProject(id, body));
   }
+  if (action === "get") return api(`/v1/projects/${id}`);
+  if (action === "version") return api(`/v1/projects/${id}/versions/${body}`);
+  if (action === "save") return api(`/v1/projects/${id}/versions`, { method: "POST", body });
+  if (action === "settings") return api(`/v1/projects/${id}`, { method: "PATCH", body });
+  if (action === "duplicate") return api(`/v1/projects/${id}/duplicate`, { method: "POST", body });
+  throw new Error("Unknown strategy action");
+}
+
+async function showProjects() {
+  $("workspace-mode").textContent = state.org
+    ? "Private database workspace. Code snapshots are versioned; backtests use your approved spending ceiling."
+    : "Private device workspace. Strategies stay in this browser, not a database. Download your Python files as a backup. Cloud saving, AI models and backtests need connected accounts.";
   try {
-    const { projects } = await api(`/v1/orgs/${state.org}/projects`);
-    $("project-list").replaceChildren(...projects.map((p) => el("li", {},
-      el("a", { href: `#project/${p.id}` }, p.name,
-        el("span", { class: "sub" }, `v${p.latest_version_no} · created ${when(p.created_at)}`)))));
-    if (!projects.length) $("project-list").append(el("li", { class: "muted" }, "No strategies yet."));
+    const result = state.org ? await api(`/v1/orgs/${state.org}/projects`) : localWorkspace.listProjects();
+    if (location.hash && location.hash !== "#code") return;
+    projectRows = result.projects;
+    const selected = $("project-folder").value;
+    const folders = [...new Set(projectRows.map((p) => p.folder).filter(Boolean))].sort();
+    $("project-folder").replaceChildren(el("option", { value: "" }, "All folders"),
+      el("option", { value: "__none" }, "No folder"), ...folders.map((f) => el("option", { value: f }, f)));
+    $("project-folder").value = folders.includes(selected) || selected === "__none" ? selected : "";
+    renderProjects();
   } catch (e) { fail(e); }
 }
 
-$("new-project-form").addEventListener("submit", async (e) => {
+function renderProjects() {
+  const query = $("project-search").value.trim().toLocaleLowerCase(), folder = $("project-folder").value;
+  const rows = projectRows.filter((p) => (!query || `${p.name} ${p.description || ""}`.toLocaleLowerCase().includes(query)) &&
+    (!folder || (folder === "__none" ? !p.folder : p.folder === folder)));
+  $("project-list").replaceChildren(...rows.map((p) => el("li", {},
+    el("a", { href: `#project/${p.id}` }, p.name,
+      el("span", { class: "sub" }, `${p.folder || "No folder"} · private · v${p.latest_version_no}`),
+      el("span", { class: "sub" }, `Updated ${when(p.updated_at || p.created_at)}`)))));
+  if (!rows.length) $("project-list").append(el("li", { class: "muted" }, projectRows.length ? "No matching strategies." : "Create your first Python strategy."));
+}
+for (const id of ["project-search", "project-folder"]) $(id).addEventListener("input", renderProjects);
+
+$("new-project-form").addEventListener("submit", (e) => {
   e.preventDefault();
-  try {
-    const p = await api(`/v1/orgs/${state.org}/projects`, { method: "POST",
-      body: { name: $("new-project-name").value.trim(), template: "sma_cross" } });
+  busy(e.submitter, async () => {
+    const origin = location.hash;
+    const body = { name: $("new-project-name").value.trim(), files: { "strategy.py": blankStrategy }, entrypoint: "strategy.py", template: null };
+    const p = state.org ? await api(`/v1/orgs/${state.org}/projects`, { method: "POST", body }) : await localWrite(() => localWorkspace.createProject(body));
     $("new-project-name").value = "";
-    location.hash = `#project/${p.id}`;
-  } catch (err) { fail(err); }
+    if (location.hash === origin) location.hash = `#project/${p.id}`;
+    else say(`Created ${p.name}. Find it in Studio.`);
+  });
 });
 
-const draftKey = () => `veyra.draft.${state.project.id}`;
+const draftSession = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+const draftKey = (id = state.project?.id) => `veyra.draft.${id}.${draftSession}`;
+function readDeviceDrafts(id) {
+  const prefix = `veyra.draft.${id}`;
+  const drafts = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key !== prefix && !key.startsWith(`${prefix}.`)) continue;
+    const content = localStorage.getItem(key);
+    let value;
+    try { value = JSON.parse(content); } catch { value = { legacy: content }; }
+    drafts.push({ key, content, value });
+  }
+  return drafts.sort((a, b) => (Number(b.value?.saved_at) || 0) - (Number(a.value?.saved_at) || 0));
+}
+function persistDraft() {
+  if (!state.project) return;
+  try {
+    if (JSON.stringify(state.project.files) === JSON.stringify(state.project.savedFiles)) localStorage.removeItem(draftKey());
+    else localStorage.setItem(draftKey(), JSON.stringify({ base_version: state.project.version.version_no, saved_at: Date.now(), files: state.project.files }));
+    state.project.draftStored = true;
+  } catch { state.project.draftStored = false; }
+}
 
 async function showProject(id) {
+  const request = ++projectLoad;
+  if ($("strategy-settings-dialog").open) $("strategy-settings-dialog").close();
+  state.project = null;
   $("quote-box").hidden = true;
+  $("editor").disabled = true;
+  $("save-version").disabled = true;
+  $("project-title").textContent = "Loading strategy…";
   try {
-    const p = await api(`/v1/projects/${id}`);
-    const latest = p.versions[0];
-    const v = await api(`/v1/projects/${id}/versions/${latest.version_no}`);
-    state.project = { id, name: p.name, version: v, saved: v.files[v.entrypoint] };
+    const p = await projectRequest(id, "get"), latest = p.versions[0];
+    const v = await projectRequest(id, "version", latest.version_no);
+    if (request !== projectLoad || !currentProjectRoute(id)) return;
+    const files = { ...v.files };
+    let draftNotice = "";
+    const drafts = readDeviceDrafts(id);
+    // Each tab owns a separate draft key. Other tabs' drafts are never overwritten or removed.
+    const matching = drafts.find(({ value }) => value && value.base_version === v.version_no &&
+      value.files && typeof value.files === "object" && Object.keys(value.files).every((f) => Object.hasOwn(files, f) && typeof value.files[f] === "string"));
+    if (matching) Object.assign(files, matching.value.files);
+    if (drafts.length) draftNotice = matching ? "Restored a device draft. Other drafts are retained for recovery." : "Older device drafts are preserved. Download recovered drafts to keep a copy.";
+    const recoveryDraft = drafts.length ? JSON.stringify({ project_id: id, drafts: drafts.map(({ content }) => content) }, null, 2) : null;
+    state.project = { ...p, id, version: v, files, savedFiles: { ...v.files }, draftStored: true, recoveryDraft };
+    fileName = v.entrypoint;
     $("project-title").textContent = p.name;
-    $("editor").value = localStorage.getItem(draftKey()) ?? state.project.saved;
+    $("project-storage").textContent = isLocalProject(id) ? "Private · this browser only · no cloud backup" : `Private · database workspace · ${p.folder || "No folder"}`;
+    $("editor-file").replaceChildren(...Object.keys(files).map((f) => el("option", { value: f }, f)));
+    $("editor-file").value = fileName;
+    $("editor").value = files[fileName];
+    $("recover-draft").hidden = !recoveryDraft;
+    $("editor").disabled = false;
+    $("save-version").disabled = false;
     markDraft();
+    resetAssistant();
+    if (draftNotice) say(draftNotice, true);
+    const local = isLocalProject(id);
+    $("backtest-availability").hidden = !local;
+    $("backtest-availability").textContent = "This is a device-local strategy. Server backtests need authenticated database storage and an isolated Python runtime. No compute is running and no charges are incurred here.";
+    for (const control of $("quote-form").querySelectorAll("input, select, button")) control.disabled = local;
+    $("strategy-runs-link").hidden = local;
+    $("strategy-runs-link").href = `#runs/${id}`;
     const ds = state.datasets.find((d) => d.dataset_id === $("bt-dataset").value);
     if (ds && !$("bt-end").value) {
       $("bt-end").value = ds.coverage_end.slice(0, 10);
       $("bt-start").value = isoDay(new Date(Date.parse(ds.coverage_end) - 3 * 365 * 864e5));
     }
-  } catch (e) { fail(e); }
+  } catch (e) {
+    if (request === projectLoad && currentProjectRoute(id)) { $("project-title").textContent = "Strategy unavailable"; fail(e); }
+  }
 }
 
 function markDraft() {
-  const dirty = $("editor").value !== state.project.saved;
-  $("project-version").textContent = `strategy.py · saved v${state.project.version.version_no}`;
-  $("draft-state").textContent = dirty ? "unsaved changes (kept on this device)" : "up to date";
+  if (!state.project) return;
+  const dirty = JSON.stringify(state.project.files) !== JSON.stringify(state.project.savedFiles);
+  $("project-version").textContent = `saved v${state.project.version.version_no}`;
+  $("draft-state").textContent = dirty ? (state.project.draftStored ? "Unsaved edits · device draft kept" : "Unsaved edits · browser storage full, download a backup") : "Saved";
 }
 
+$("editor-file").addEventListener("change", () => {
+  if (!state.project) return;
+  fileName = $("editor-file").value;
+  $("editor").value = state.project.files[fileName];
+  resetAssistant();
+  markDraft();
+});
 $("editor").addEventListener("input", () => {
   if (!state.project) return;
-  if ($("editor").value === state.project.saved) localStorage.removeItem(draftKey());
-  else localStorage.setItem(draftKey(), $("editor").value);
+  state.project.files[fileName] = $("editor").value;
+  persistDraft();
   markDraft();
-  $("quote-box").hidden = true; // a quote is only valid for the code it priced
+  $("quote-box").hidden = true;
 });
 
 function insertAtCursor(text) {
   const ed = $("editor");
+  if (!state.project || ed.disabled) return;
   ed.focus();
   ed.setRangeText(text, ed.selectionStart, ed.selectionEnd, "end");
   ed.dispatchEvent(new Event("input"));
 }
-for (const b of document.querySelectorAll("[data-key]")) {
-  // pointerdown + preventDefault keeps the keyboard open on phones
-  b.addEventListener("pointerdown", (e) => { e.preventDefault(); insertAtCursor(b.dataset.key); });
-}
+for (const b of document.querySelectorAll("[data-key]")) b.addEventListener("pointerdown", (e) => { e.preventDefault(); insertAtCursor(b.dataset.key); });
 $("editor").addEventListener("keydown", (e) => {
-  if (e.key === "Tab" && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
-    e.preventDefault();
-    insertAtCursor("    ");
-  }
+  if (e.key === "Tab" && !e.shiftKey && !e.ctrlKey && !e.metaKey) { e.preventDefault(); insertAtCursor("    "); }
+  if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); busy($("save-version"), saveIfDirty); }
 });
 
 async function saveIfDirty() {
-  const code = $("editor").value;
-  if (code === state.project.saved) return state.project.version;
-  const v = await api(`/v1/projects/${state.project.id}/versions`, { method: "POST",
-    body: { files: { "strategy.py": code }, entrypoint: "strategy.py" } });
-  state.project.version = v;
-  state.project.saved = code;
-  localStorage.removeItem(draftKey());
+  const p = state.project;
+  if (!p) throw new Error("Open a strategy first.");
+  if (JSON.stringify(p.files) === JSON.stringify(p.savedFiles)) return p.version;
+  const files = { ...p.files };
+  const v = await projectRequest(p.id, "save", { files, entrypoint: p.version.entrypoint, expected_version_no: p.version.version_no });
+  if (state.project !== p) return v;
+  p.version = { ...v, files };
+  p.savedFiles = files;
+  persistDraft();
   markDraft();
-  say(`Saved v${v.version_no}`);
+  say(`Saved v${v.version_no}${isLocalProject(p.id) ? " on this device" : ""}`);
   return v;
 }
 $("save-version").addEventListener("click", (e) => busy(e.currentTarget, saveIfDirty));
 
+function downloadText(text, name, type = "text/plain") {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = el("a", { href: url, download: name });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+$("recover-draft").addEventListener("click", () => {
+  if (state.project?.recoveryDraft) downloadText(state.project.recoveryDraft, "veyra-recovered-draft.json", "application/json");
+});
+$("download-code").addEventListener("click", () => {
+  if (state.project) downloadText($("editor").value, fileName.split("/").pop(), "text/x-python");
+});
+$("duplicate-project").addEventListener("click", (e) => busy(e.currentTarget, async () => {
+  const p = state.project;
+  if (!p) throw new Error("Open a strategy first.");
+  await saveIfDirty();
+  const copy = await projectRequest(p.id, "duplicate", {});
+  if (state.project === p && currentProjectRoute(p.id)) location.hash = `#project/${copy.id}`;
+  else say(`Created ${copy.name || "strategy copy"}. Find it in Studio.`);
+}));
+$("project-settings").addEventListener("click", () => {
+  if (!state.project) return;
+  $("settings-name").value = state.project.name;
+  $("settings-description").value = state.project.description || "";
+  $("settings-folder").value = state.project.folder || "";
+  $("strategy-settings-dialog").showModal();
+});
+$("close-strategy-settings").addEventListener("click", () => $("strategy-settings-dialog").close());
+$("strategy-settings-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  busy(e.submitter, async () => {
+    const p = state.project;
+    if (!p) throw new Error("Open a strategy first.");
+    const saved = await projectRequest(p.id, "settings", { name: $("settings-name").value, description: $("settings-description").value, folder: $("settings-folder").value || null });
+    if (state.project === p) {
+      Object.assign(p, { name: saved.name, description: saved.description, folder: saved.folder });
+      $("project-title").textContent = saved.name;
+      $("strategy-settings-dialog").close();
+      say("Strategy settings saved.");
+    }
+  });
+});
+
+function assistantMessage(speaker, message) {
+  $("assistant-messages").append(el("li", { class: speaker === "You" ? "from-user" : "from-assistant" }, el("strong", {}, speaker), message));
+  $("assistant-messages").scrollTop = $("assistant-messages").scrollHeight;
+}
+function resetAssistant() {
+  assistantProposal = assistantUndo = null;
+  $("assistant-proposal").hidden = true;
+  $("assistant-undo").hidden = true;
+  $("assistant-messages").replaceChildren();
+  assistantMessage("Built-in helper", "Choose a Python template, ask about the SDK, or set an explicit parameter. You'll review each proposed edit before applying it.");
+}
+function askAssistant(prompt) {
+  if (!state.project) return;
+  assistantMessage("You", prompt);
+  const response = VeyraStudioAssistant.propose({ code: $("editor").value, prompt });
+  assistantMessage("Built-in helper", response.message);
+  assistantProposal = response.status === "proposal" ? { proposal: response, projectId: state.project.id, fileName } : null;
+  $("assistant-proposal").hidden = !assistantProposal;
+  if (assistantProposal) {
+    $("assistant-before").textContent = assistantProposal.proposal.base_code;
+    $("assistant-after").textContent = assistantProposal.proposal.proposed_code;
+  }
+  $("assistant-prompt").value = "";
+}
+$("assistant-form").addEventListener("submit", (e) => { e.preventDefault(); askAssistant($("assistant-prompt").value.trim()); });
+for (const b of document.querySelectorAll("[data-prompt]")) b.addEventListener("click", () => askAssistant(b.dataset.prompt));
+$("assistant-dismiss").addEventListener("click", () => { assistantProposal = null; $("assistant-proposal").hidden = true; });
+$("assistant-apply").addEventListener("click", () => {
+  if (!assistantProposal || assistantProposal.projectId !== state.project?.id || assistantProposal.fileName !== fileName) return;
+  const result = VeyraStudioAssistant.applyProposal($("editor").value, assistantProposal.proposal);
+  if (result.status !== "applied") { assistantMessage("Built-in helper", result.message); return; }
+  assistantUndo = { before: $("editor").value, after: result.code };
+  $("editor").value = result.code;
+  $("editor").dispatchEvent(new Event("input"));
+  $("assistant-proposal").hidden = true;
+  $("assistant-undo").hidden = false;
+  assistantProposal = null;
+  assistantMessage("Built-in helper", "Applied to your draft. Review the Python code, then save a version when you're ready.");
+});
+$("assistant-undo").addEventListener("click", () => {
+  if (!assistantUndo) return;
+  if ($("editor").value !== assistantUndo.after) { assistantMessage("Built-in helper", "The code changed after that edit. Undo would overwrite your work, so it was not applied."); return; }
+  $("editor").value = assistantUndo.before;
+  $("editor").dispatchEvent(new Event("input"));
+  assistantUndo = null;
+  $("assistant-undo").hidden = true;
+});
+
+function quoteSignature() {
+  return JSON.stringify({ project: state.project?.id, files: state.project?.files,
+    fields: ["bt-dataset", "bt-start", "bt-end", "bt-cash", "bt-runtime", "bt-params"].map((id) => $(id).value) });
+}
+
 $("quote-form").addEventListener("submit", (e) => {
   e.preventDefault();
   busy(e.submitter, async () => {
+    if (!state.project || isLocalProject(state.project.id)) throw new Error("Backtests need a connected database workspace.");
+    const signature = quoteSignature();
+    const inputs = { dataset_id: $("bt-dataset").value, start: $("bt-start").value,
+      end: $("bt-end").value, starting_cash: $("bt-cash").value,
+      max_runtime_seconds: Number($("bt-runtime").value) };
     let params;
     try { params = JSON.parse($("bt-params").value || "{}"); } catch {
       throw new Error("Parameters must be valid JSON, for example {\"fast\": 10}");
     }
     const v = await saveIfDirty();
-    state.quote = await api("/v1/quotes", { method: "POST", body: {
-      project_version_id: v.id, dataset_id: $("bt-dataset").value,
-      start: $("bt-start").value, end: $("bt-end").value, starting_cash: $("bt-cash").value,
-      params, max_runtime_seconds: Number($("bt-runtime").value) } });
+    if (signature !== quoteSignature()) throw new Error("Inputs changed while saving. Get a new price for the current code.");
+    const quote = await api("/v1/quotes", { method: "POST", body: { project_version_id: v.id, ...inputs, params } });
+    if (signature !== quoteSignature() || !location.hash.startsWith("#project/")) return;
+    state.quote = quote;
+    state.quoteSignature = signature;
     $("q-expected").textContent = usd(state.quote.estimate.customer_expected_nano);
     $("q-max").textContent = usd(state.quote.customer_max_nano);
     $("approve").textContent = `Approve up to ${usd(state.quote.customer_max_nano)} and run`;
@@ -567,6 +776,7 @@ $("quote-form").addEventListener("input", () => { $("quote-box").hidden = true; 
 
 $("approve").addEventListener("click", (e) => busy(e.currentTarget, async () => {
   const q = state.quote;
+  if (!q || state.quoteSignature !== quoteSignature()) throw new Error("The code or backtest settings changed. Get a new price before approving.");
   let auth;
   try {
     auth = await api(`/v1/quotes/${q.id}/authorize`, { method: "POST",
@@ -585,25 +795,70 @@ $("approve").addEventListener("click", (e) => busy(e.currentTarget, async () => 
 // ---------------------------------------------------------------- runs
 const outcomeClass = { completed: "good", failed: "bad", incomplete: "warn", cancelled: "warn" };
 
-async function showRuns() {
+let runRows = [], runCursor = null, runScope = null, runLoad = 0;
+const profitable = (v) => v == null ? "Unavailable" : `${Number(v).toFixed(2)}%`;
+
+async function showRuns(projectId, more = false) {
+  const request = ++runLoad;
+  if (!more) { runRows = []; runCursor = null; runScope = projectId || null; }
+  $("load-more-runs").hidden = true;
   if (!state.org) {
-    $("run-list").replaceChildren(el("li", { class: "muted" }, "No runs yet. Backtests are coming soon."));
+    $("runs-scope").textContent = "Backtests require a connected account, database storage and isolated Python compute. Device-local strategies have no server run history.";
+    $("run-list").replaceChildren(el("li", { class: "muted" }, "No backtests have been run here."));
     return;
   }
   try {
-    const { jobs } = await api(`/v1/orgs/${state.org}/jobs`);
-    $("run-list").replaceChildren(...jobs.map((j) => el("li", {},
-      el("a", { href: `#run/${j.id}`, class: ["failed", "incomplete"].includes(j.outcome) ? "alert" : "" },
-        `${j.outcome ?? j.state} · ${j.dataset_id}`,
-        el("span", { class: "sub" }, `${when(j.created_at)} · ` + (j.charge_nano == null
-          ? `up to ${usd(j.reserved_nano)} reserved` : `charged ${usd(j.charge_nano)}`))))));
-    if (!jobs.length) $("run-list").append(el("li", { class: "muted" }, "No runs yet."));
-  } catch (e) { fail(e); }
+    const query = new URLSearchParams({ limit: "50" });
+    if (runScope) query.set("project_id", runScope);
+    if (more && runCursor) query.set("cursor", runCursor);
+    const result = await api(`/v1/orgs/${state.org}/jobs?${query}`);
+    if (request !== runLoad || !location.hash.startsWith("#runs")) return;
+    const known = new Set(runRows.map((j) => j.id));
+    runRows.push(...result.jobs.filter((j) => !known.has(j.id)));
+    runCursor = result.next_cursor;
+    renderRuns();
+    $("load-more-runs").hidden = !runCursor;
+    $("runs-scope").replaceChildren(`${runRows.length} runs loaded${runCursor ? " · older runs are available below" : " · all available runs"}. `);
+    if (runScope) $("runs-scope").append(el("a", { href: "#runs" }, "Show all strategies"));
+  } catch (e) { fail(e); $("load-more-runs").hidden = !runCursor; }
 }
 
+function renderRuns() {
+  const groups = new Map();
+  for (const job of runRows) {
+    const id = job.project_id || "unknown";
+    if (!groups.has(id)) groups.set(id, []);
+    groups.get(id).push(job);
+  }
+  $("run-list").replaceChildren(...[...groups].map(([id, jobs]) => {
+    const newest = jobs[0], total = newest.project_run_count || jobs.length;
+    const label = `${jobs.length}${total > jobs.length ? ` of ${total}` : ""} runs · latest ${when(newest.created_at)}`;
+    const summary = el("summary", {}, newest.project_name || "Strategy", el("span", { class: "sub" }, label));
+    const details = el("details", {}, summary,
+      el("ul", { class: "strategy-history" }, ...jobs.map((j) => {
+        const a = el("a", { href: `#run/${j.id}`, class: ["failed", "incomplete"].includes(j.outcome) ? "alert" : "" },
+          `${when(j.created_at)} · ${j.outcome ?? j.state}`,
+          el("span", { class: "sub" }, `v${j.version_no ?? "?"} · ${j.dataset_id} · ${j.start || ""} to ${j.end || ""}`),
+          el("span", { class: "run-profit" }, profitable(j.metrics?.percent_profitable)),
+          el("span", { class: "sub" }, "Profitable closed trades · after fees"),
+          el("span", { class: "sub" }, j.charge_nano == null ? `Up to ${usd(j.reserved_nano)} reserved` : `Charged ${usd(j.charge_nano)}`));
+        return el("li", {}, a);
+      })));
+    if (runScope) details.open = true;
+    if (total > jobs.length && id !== "unknown") details.append(el("a", { href: `#runs/${id}`, class: "small" }, "View this strategy’s full history"));
+    return el("li", {}, details);
+  }));
+  if (!runRows.length) $("run-list").append(el("li", { class: "muted" }, "No runs yet. Open a saved strategy to prepare a backtest."));
+}
+$("load-more-runs").addEventListener("click", (e) => busy(e.currentTarget, () => showRuns(runScope, true)));
+
 async function showRun(id) {
+  state.reportId = null;
+  $("run-report").hidden = true;
+  for (const b of document.querySelectorAll("[data-artifact]")) b.disabled = true;
   let job;
   try { job = await api(`/v1/jobs/${id}`); } catch (e) { fail(e); return; }
+  if (location.hash !== `#run/${id}`) return;
   const live = job.state !== "settled";
   const label = live ? job.state : job.outcome;
   $("run-state").textContent = label;
@@ -623,7 +878,7 @@ async function showRun(id) {
     return;
   }
   refreshBalance();
-  if (job.report_id) await showReport(job);
+  if (job.report_id) { try { await showReport(job); } catch (e) { fail(e); } }
   else if (job.receipt) { $("run-report").hidden = false; fillReceipt(job.receipt); }
 }
 
@@ -635,26 +890,32 @@ function fillReceipt(r) {
   if (r.absorbed_by_platform_nano) rows.push(["Covered by Veyra", usd(r.absorbed_by_platform_nano, 6)]);
   $("run-receipt").replaceChildren(...rows.flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)]));
   $("run-report").hidden = false;
-  for (const x of ["run-note", "run-tiles", "equity-chart"]) $(x).hidden = true;
+  for (const x of ["run-note", "run-tiles", "run-profitability", "equity-chart"]) $(x).hidden = true;
 }
 
 async function showReport(job) {
   const rep = await api(`/v1/reports/${job.report_id}/artifacts/report.json`);
+  if (location.hash !== `#run/${job.id}`) return;
   fillReceipt(job.receipt);
-  for (const x of ["run-note", "run-tiles", "equity-chart"]) $(x).hidden = false;
+  for (const x of ["run-note", "run-tiles", "run-profitability", "equity-chart"]) $(x).hidden = false;
   const m = rep.metrics;
+  $("run-profitability-value").textContent = profitable(m.percent_profitable);
+  $("run-profitability-definition").textContent = m.closed_trade_count == null
+    ? "This older report does not contain closed-trade profitability. No value has been inferred."
+    : `${m.winning_trade_count} profitable / ${m.closed_trade_count} closed trades. A trade runs from flat to long to flat, after all execution fees. Open positions are excluded; breakeven trades are not wins. ${m.closed_trade_count ? "" : "Unavailable until a trade closes."}`;
   $("run-note").textContent = [rep.complete ? "" : `Incomplete run: ${rep.bars.processed} of ${rep.bars.total} days. Not a finished performance report.`,
     rep.evidence_note || ""].filter(Boolean).join(" ");
   $("run-note").hidden = !$("run-note").textContent;
   fillTiles($("run-tiles"), [["Net return", pct(m.net_return)], ["Annualized", pct(m.cagr)],
     ["Max drawdown", pct(m.max_drawdown)], ["Days below peak", m.max_drawdown_days ?? "n/a"],
-    ["Sharpe (rf 0)", num(m.sharpe)], ["Trades", m.trade_count], ["Fees paid", num(m.total_fees)],
+    ["Sharpe (rf 0)", num(m.sharpe)], ["Closed trades", m.closed_trade_count ?? "n/a"], ["Fills", m.fill_count ?? m.trade_count], ["Fees paid", num(m.total_fees)],
     ["Time in market", pct(m.exposure)]]);
   const chart = makeChart("equity-chart");
   charts.equity ??= chart.addLineSeries({ color: chartColors().ink, lineWidth: 2 });
   charts.equity.setData(rep.equity_curve.map(([ts, v]) => ({ time: toTime(ts), value: +v })));
   chart.timeScale().fitContent();
   state.reportId = job.report_id;
+  for (const b of document.querySelectorAll("[data-artifact]")) b.disabled = false;
 }
 
 $("run-cancel").addEventListener("click", (e) => busy(e.currentTarget, async () => {
@@ -667,9 +928,12 @@ $("run-cancel").addEventListener("click", (e) => busy(e.currentTarget, async () 
 
 for (const b of document.querySelectorAll("[data-artifact]")) {
   b.addEventListener("click", () => busy(b, async () => {
-    const res = await api(`/v1/reports/${state.reportId}/artifacts/${b.dataset.artifact}`, { raw: true });
+    const id = state.reportId;
+    if (!id) throw new Error("No report is available for this run.");
+    const res = await api(`/v1/reports/${id}/artifacts/${b.dataset.artifact}?download=true`, { raw: true });
     const url = URL.createObjectURL(await res.blob());
-    el("a", { href: url, download: `veyra-${state.reportId.slice(0, 8)}-${b.dataset.artifact}` }).click();
+    const a = el("a", { href: url, download: `veyra-${id.slice(0, 8)}-${b.dataset.artifact}` });
+    document.body.append(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   }));
 }

@@ -8,6 +8,8 @@ import json
 from decimal import Decimal
 from typing import Any
 
+from veyra_sim.metrics import DEFINITIONS
+
 REPORT_SCHEMA_VERSION = 1
 RESULT_FIELDS = ("outcome", "bars", "metrics", "execution_model", "quality_findings",
                  "equity_curve", "fills", "rejections", "strategy_logs")
@@ -84,10 +86,20 @@ def render_html(report: dict) -> str:
     for i, v in eq:
         peak = max(peak, v)
         dd.append((i, (v - peak) / peak if peak else Decimal(0)))
-    tiles = [("Net return", pct(m.get("net_return"))), ("CAGR", pct(m.get("cagr"))),
+    profitable = ("unavailable" if m.get("percent_profitable") is None
+                  else f"{Decimal(m['percent_profitable']):.2f}%")
+    fills_count = m.get("fill_count")
+    if fills_count is None and m.get("version") == "metrics-v1":
+        fills_count = m.get("trade_count")
+    tiles = [("Percent profitable", profitable),
+             ("Closed trades", str(m.get("closed_trade_count", "unavailable"))),
+             ("Winning trades", str(m.get("winning_trade_count", "unavailable"))),
+             ("Net return", pct(m.get("net_return"))), ("CAGR", pct(m.get("cagr"))),
              ("Max drawdown", pct(m.get("max_drawdown"))), ("Sharpe (rf=0)", num(m.get("sharpe"))),
              ("Volatility (ann.)", pct(m.get("volatility_ann"))),
-             ("Trades", str(m.get("trade_count", 0))), ("Fees", num(m.get("total_fees")))]
+             ("Fills", str(fills_count) if fills_count is not None else "unavailable"),
+             ("Fees", num(m.get("total_fees")))]
+    profitable_definition = e(DEFINITIONS["percent_profitable"])
     monthly = "".join(f"<tr><td>{e(k)}</td><td>{pct(v)}</td></tr>"
                       for k, v in (m.get("monthly_returns") or {}).items())
     fills = "".join(
@@ -129,11 +141,12 @@ font-weight:600}} .note{{border-left:3px solid var(--warn);padding-left:8px}}
 result digest <code>{e(report["result_digest"][:23])}…</code></p>
 {banner}{note}
 <div class="tiles">{tile_html}</div>
+<p class="muted">Percent profitable: {profitable_definition}.</p>
 <h2>Equity (close-marked)</h2>{_svg_line(eq)}
 <h2>Drawdown</h2>{_svg_line(dd, color="#dc2626")}
 <h2>Monthly returns</h2><div class="scroll"><table><tr><th>Month</th><th>Return</th></tr>
 {monthly}</table></div>
-<h2>Trades ({len(report["fills"])})</h2><div class="scroll"><table>
+<h2>Fills ({len(report["fills"])})</h2><div class="scroll"><table>
 <tr><th>Time (UTC)</th><th>Side</th><th>Qty</th><th>Price</th><th>Fee</th></tr>{fills}</table></div>
 <h2>Execution model and limitations</h2><pre>{model}</pre>
 <h2>Provenance</h2><pre>{prov}</pre>

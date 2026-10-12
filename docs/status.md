@@ -1,6 +1,6 @@
 # Build status against the master spec
 
-Last updated 2026-10-11. Phase: **P1/P2 groundwork, sprint 1 (spec §30)**, plus the
+Last updated 2026-10-12. See [overnight progress](overnight-progress.md) for the new Studio/history slice and verification limits. Phase: **P1/P2 groundwork, sprint 1 (spec §30)**, plus the
 first phone app (business synopsis, stage 1).
 
 ## Stage 1 journey (business synopsis) on a phone
@@ -8,12 +8,12 @@ first phone app (business synopsis, stage 1).
 | Step | Status |
 |---|---|
 | Open the app, study a market | Done: touch candlestick chart, 3M/1Y/All, source and license shown |
-| Develop a strategy | Done: templates, phone editor with symbol bar, device drafts, versions |
+| Develop a strategy | Python Studio: private device-local snapshots without an account, full-file preservation, folder/settings/duplicate, database APIs behind existing authorization |
 | Run a paid backtest | Done: price shown next to Approve; reserve, run, settle |
-| Understand the report | Done: key numbers first, equity chart, receipt, HTML/CSV downloads |
-| Return later | Done: runs continue server-side; Runs tab and reloads come back |
+| Understand the report | Closed-trade percent profitable with explicit definition, equity chart, receipt, HTML/fill CSV/JSON downloads; older metrics remain unavailable |
+| Return later | Paginated strategy-grouped run history with all runs reachable; device-local strategies persist only in this browser |
 | Watch spending | Done: balance, reserved, spent, usage list |
-| Ask AI to write or change code | **Not started.** Needs an AI provider account (spec A17) |
+| Ask AI to write or change code | Built-in offline template/parameter proposals with preview/apply/undo; clearly not AI. Real model connection remains blocked (spec A17) |
 | Real data, real payments, real accounts | **Blocked on founder**: data contract, Stripe, Clerk |
 | Paper trading, live bots, marketplace | Later stages (3–5) |
 
