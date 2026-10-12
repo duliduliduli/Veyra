@@ -191,8 +191,8 @@ rejected(() => store.listProjects(), 503, "STORAGE_READ_FAILED");
 rejected(() => store.createProject(initial), 503, "STORAGE_READ_FAILED");
 assert.equal(storage.values.get(KEY), stable);
 storage.failRead = false;
-rejected(() => create(null), 503, "STORAGE_UNAVAILABLE");
-rejected(() => create({ getItem() {} }), 503, "STORAGE_UNAVAILABLE");
+rejected(() => create(null).listProjects(), 503, "STORAGE_UNAVAILABLE");
+rejected(() => create({ getItem() {} }).listProjects(), 503, "STORAGE_UNAVAILABLE");
 
 // Invalid JSON and semantically damaged revisions must be reported, never silently reset.
 const corrupt = new Storage(), corruptStore = create(corrupt);
@@ -247,3 +247,39 @@ rejected(() => noCrypto.VeyraWorkspaceStore.create(secureOnly).createProject(ini
 assert.equal(secureOnly.writes, 0);
 
 console.log("Workspace store checks passed: private local persistence, full file/revision history, metadata/filtering, duplicates, validation, stale versions, storage failures, corruption, and browser/CommonJS exports.");
+
+// The editor shares pure validation with saves, without writing any storage or touching source bytes.
+const { validateSnapshot, validateFilePath } = require("../../apps/web/workspace-store.js");
+const exactSource = "\t# mixed endings\r\nvalue = '雪'\rnext = 2\n\n";
+const validated = validateSnapshot({ files: { "pkg/main.py": exactSource, "blank.py": "" }, entrypoint: "pkg/main.py" });
+assert.deepEqual(validated, { files: { "pkg/main.py": exactSource, "blank.py": "" }, entrypoint: "pkg/main.py" });
+for (const path of ["a.py\n", "a.py\r", "a.py\0", "../a.py", "a\\b.py", "a//b.py", "x".repeat(254) + ".py", "constructor", "__proto__"])
+  rejected(() => validateFilePath(path), 422);
+assert.equal(validateFilePath("x".repeat(253) + ".py").length, 256);
+assert.equal(validateFilePath("signals/day_1/entry-point.py"), "signals/day_1/entry-point.py");
+for (const text of ["\ud800", "\udfff", "x\ud800x", "\ud800\ud800", "🙂\udc00"])
+  rejected(() => validateSnapshot({ files: { "strategy.py": text } }), 422);
+let accessorRead = false;
+const getterFiles = {}; Object.defineProperty(getterFiles, "strategy.py", { enumerable: true, get() { accessorRead = true; return ""; } });
+rejected(() => validateSnapshot({ files: getterFiles }), 422);
+const getterSnapshot = {}; Object.defineProperty(getterSnapshot, "files", { get() { accessorRead = true; return { "strategy.py": "" }; } });
+rejected(() => validateSnapshot(getterSnapshot), 422);
+assert.equal(accessorRead, false, "Validation must not invoke untrusted getters");
+rejected(() => validateSnapshot({ files: { "strategy.py\n": "" }, entrypoint: "strategy.py\n" }), 422);
+rejected(() => validateSnapshot({ files: { "strategy.py": "" }, entrypoint: null }), 422);
+assert.equal(validateSnapshot({ files: { ["x".repeat(254) + ".py"]: exactSource }, entrypoint: "x".repeat(254) + ".py" }).files["x".repeat(254) + ".py"], exactSource,
+  "Existing long paths remain inspectable without truncation");
+
+// Optional duplicate version guard preserves old callers while UI copies the displayed immutable source.
+const guardedStorage = new Storage(), guardedStore = create(guardedStorage);
+const guarded = guardedStore.createProject({ name: "Guarded copy", files: { "strategy.py": exactSource } });
+guardedStore.saveVersion(guarded.id, { files: { "renamed.py": exactSource }, entrypoint: "renamed.py", expected_version_no: 1 });
+const beforeConflict = guardedStorage.values.get(KEY), guardWrites = guardedStorage.writes;
+rejected(() => guardedStore.duplicateProject(guarded.id, { expected_version_no: 1 }), 409, "VERSION_CONFLICT");
+for (const expected_version_no of [null, 0, -1, 1.5, "2", true, 2147483648])
+  rejected(() => guardedStore.duplicateProject(guarded.id, { expected_version_no }), 422);
+assert.equal(guardedStorage.values.get(KEY), beforeConflict); assert.equal(guardedStorage.writes, guardWrites);
+const guardedCopy = guardedStore.duplicateProject(guarded.id, { expected_version_no: 2 });
+assert.equal(guardedCopy.latest_version.entrypoint, "renamed.py");
+assert.deepEqual(guardedCopy.latest_version.files, { "renamed.py": exactSource });
+assert.equal(guardedStore.duplicateProject(guarded.id).latest_version.entrypoint, "renamed.py", "Legacy unguarded programmatic callers remain supported");

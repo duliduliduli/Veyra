@@ -74,12 +74,31 @@ class names, and ambiguous occurrences are rejected. Matching then reconstructin
 entire scaffold prevents edits inside arbitrary Python comments, strings, or unrelated
 expressions without pretending a regular expression can parse Python.
 
-Windows require `1 <= fast < slow <= 10000`. Allocation requires `0 < alloc <= 1`,
-at most six decimal places, and no exponent notation. These validate the proposed
-source default; they do not validate separately supplied run configuration. The SMA
-starter is intentionally identical to `templates/strategies/sma_cross.py`; a contract
-test detects drift. Buy-and-hold submits at most one entry intent; a rejected order
-is not automatically retried. All templates are examples with no performance evidence.
+Proposed source-default edits require `1 <= fast < slow <= 10000` and allocation
+`0 < alloc <= 1`, at most six decimal places, and no exponent notation. This helper
+does not inspect or validate separately supplied run configuration.
+
+Newly created starter source now validates its own runtime overrides at initialization:
+both starters require a finite allocation in `0 < alloc <= 1`; SMA requires integer
+windows (Python integers or integer strings, excluding booleans/floats) with
+`1 <= fast < slow <= 10000`. Invalid values raise a clear `ValueError` before bars or
+orders. Runtime allocation accepts Decimal-compatible numeric text; the editor's
+six-place/no-exponent restriction applies only to helper commands. The new SMA source
+is intentionally identical to `templates/strategies/sma_cross.py`; tests detect drift.
+
+The revised buy-and-hold example submits at most one entry intent per closed bar
+while flat, until an actual buy fill invokes `on_fill`. A rejected next-open order
+may therefore be retried with a quantity sized from the next observed close. It stops
+submitting after a buy fill. This does not guarantee a fill: gaps, fees, lot rounding,
+or the end of the dataset can prevent one. SMA still submits only on crossovers; its
+signal behavior has not changed. All templates are examples with no performance evidence.
+
+This is an explicit template revision. Previously issued v1 buy-and-hold source keeps
+its documented one-intent/no-retry behavior, and v1 SMA keeps its previous validation.
+Both exact v1 scaffolds remain recognized for numeric-default-only edits, including
+earlier parameter edits and CRLF endings. Loading saved source never upgrades it.
+Only explicit new template creation and review/Apply replaces editor contents;
+Undo restores the exact previous source. Existing stored versions remain unchanged.
 Input is bounded to 100,000 source characters and 500 prompt characters.
 
 ## Future provider adapter contract (not implemented or connected)
@@ -132,5 +151,11 @@ invalid parameters; and unsupported or instruction-injection-like prompts.
 
 These are dependency-free module contract tests, despite their `tests/e2e` location.
 They do not claim full browser UI coverage, Python runtime validation, strategy safety,
-investment suitability, model integration, or performance evidence. UI integration
-must separately test preview, Apply, Undo, project navigation, sign-out, and newer edits.
+investment suitability, model integration, or performance evidence. The separate
+`tests/test_studio_templates.py` executes only these reviewed bundled sources in-process
+with a tiny synchronous protocol fixture, SDK observations, and the real simulator on
+synthetic bars. It covers deterministic rejection/retry/fill timing, final expiration,
+SMA entry/exit timing, and override validation, with subprocess creation prohibited.
+`tests/e2e/proposal-diff-ui.mjs` also checks saved v1 source preservation through
+preview, Apply, Undo, and explicit replacement. Neither check runs arbitrary/user code
+or establishes production isolation. See [focused evidence](../studio-template-revisions.md).

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import html
 import json
 from decimal import Decimal
+from io import StringIO
 from typing import Any
 
 from veyra_sim.metrics import DEFINITIONS
@@ -54,8 +56,17 @@ def build(*, run_id: str, outcome: str, manifest: dict, metrics: dict, sim, mode
 
 def trades_csv(report: dict) -> str:
     cols = ["ts", "client_id", "side", "qty", "price", "fee", "cash_after", "position_after"]
-    rows = [",".join(cols)] + [",".join(str(f[c]) for c in cols) for f in report["fills"]]
-    return "\n".join(rows) + "\n"
+    output = StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(cols)
+    for fill in report["fills"]:
+        row = [str(fill[column]) for column in cols]
+        # An LF-only terminator does not make QUOTE_MINIMAL quote bare CRs.
+        if any("\r" in cell for cell in row):
+            csv.writer(output, lineterminator="\n", quoting=csv.QUOTE_ALL).writerow(row)
+        else:
+            writer.writerow(row)
+    return output.getvalue()
 
 
 def _svg_line(points: list[tuple[int, Decimal]], w=760, h=220, color="#2563eb") -> str:
@@ -102,10 +113,14 @@ def render_html(report: dict) -> str:
     profitable_definition = e(DEFINITIONS["percent_profitable"])
     monthly = "".join(f"<tr><td>{e(k)}</td><td>{pct(v)}</td></tr>"
                       for k, v in (m.get("monthly_returns") or {}).items())
+    visible_fills = report["fills"][:500]
+    fills_note = (f'<p class="muted">Showing first {len(visible_fills)} of '
+                  f'{len(report["fills"])} fills. CSV and JSON exports include all fills.</p>'
+                  if len(visible_fills) < len(report["fills"]) else "")
     fills = "".join(
         "<tr>" + "".join(f"<td>{e(str(f[c]))}</td>" for c in
                          ("ts", "side", "qty", "price", "fee")) + "</tr>"
-        for f in report["fills"][:500])
+        for f in visible_fills)
     prov = e(json.dumps(report["provenance"], indent=2, sort_keys=True))
     model = e(json.dumps(report["execution_model"], indent=2))
     receipt = e(json.dumps(report.get("receipt"), indent=2)) if report.get("receipt") else "Pending"
@@ -146,7 +161,7 @@ result digest <code>{e(report["result_digest"][:23])}…</code></p>
 <h2>Drawdown</h2>{_svg_line(dd, color="#dc2626")}
 <h2>Monthly returns</h2><div class="scroll"><table><tr><th>Month</th><th>Return</th></tr>
 {monthly}</table></div>
-<h2>Fills ({len(report["fills"])})</h2><div class="scroll"><table>
+<h2>Fills ({len(report["fills"])})</h2>{fills_note}<div class="scroll"><table>
 <tr><th>Time (UTC)</th><th>Side</th><th>Qty</th><th>Price</th><th>Fee</th></tr>{fills}</table></div>
 <h2>Execution model and limitations</h2><pre>{model}</pre>
 <h2>Provenance</h2><pre>{prov}</pre>

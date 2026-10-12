@@ -38,3 +38,38 @@ jobs:
       - run: node tests/e2e/workspace-store.mjs
       - run: npm install --prefix /tmp/veyra-test-tools --no-save jsdom@26.1.0
       - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/studio.mjs
+      - run: node tests/e2e/chart-research.mjs
+      - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/chart-ui.mjs
+      - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/publications.mjs
+      - run: node --test tests/e2e/strategy-backup.mjs
+      - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/strategy-backup-ui.mjs
+      - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/version-history-ui.mjs
+      - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/run-lifecycle-ui.mjs
+
+      - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/strategy-library-ui.mjs
+      - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/strategy-storage-ui.mjs
+      - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/backtest-approval-ui.mjs
+      - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/strategy-settings-lifecycle-ui.mjs
+      - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/approval-recovery-ui.mjs
+
+      - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/public-private-copy-ui.mjs
+
+      - run: node --test tests/e2e/saved-links.mjs
+      - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/saved-links-ui.mjs
+
+      - run: node --test tests/e2e/proposal-diff.mjs
+      - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/proposal-diff-ui.mjs
+
+      - run: node --test tests/e2e/report-evidence.mjs
+
+      - run: node --test tests/e2e/backtest-params.mjs
+
+      - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/editor-accessibility-ui.mjs
+
+      - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/browser-storage-access-ui.mjs
+
+      - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/reviewed-cloud-copy-ui.mjs
+
+      - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/editor-navigation-ui.mjs
+
+      - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/saved-chart-runs.mjs

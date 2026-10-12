@@ -6,11 +6,17 @@
   <meta name="theme-color" content="#f7f7f5" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#161616" media="(prefers-color-scheme: dark)">
   <title>Veyra</title>
-  <link rel="stylesheet" href="app.css">
+  <link rel="stylesheet" href="app.css?v=saved-chart-runs-1">
   <script src="vendor/lightweight-charts.standalone.production.js" defer></script>
-  <script src="workspace-store.js" defer></script>
-  <script src="studio-assistant.js" defer></script>
-  <script src="app.js?v=studio-1" defer></script>
+  <script src="chart-research.js?v=saved-chart-runs-1" defer></script>
+  <script src="workspace-store.js?v=storage-access-1" defer></script>
+  <script src="studio-assistant.js?v=templates-2" defer></script>
+  <script src="proposal-diff.js" defer></script>
+  <script src="strategy-backup.js" defer></script>
+  <script src="report-evidence.js?v=equity-values-1" defer></script>
+  <script src="saved-links.js?v=storage-access-1" defer></script>
+  <script src="backtest-params.js" defer></script>
+  <script src="app.js?v=saved-chart-runs-1" defer></script>
 </head>
 <body>
   <header class="top">
@@ -19,6 +25,7 @@
   </header>
 
   <p id="status" class="status" role="status" aria-live="polite"></p>
+  <p id="session-storage-status" class="status error" role="status" hidden></p>
 
   <main>
     <section id="view-markets" class="view">
@@ -56,8 +63,8 @@
         </div>
         <label for="chart-type" class="sr-only">Chart type</label>
         <select id="chart-type"><option value="candles">Candles</option><option value="line">Line</option></select>
-        <button id="chart-volume" type="button" aria-pressed="true">Volume</button>
-        <button id="chart-sma" title="20-bar moving average of displayed candles" type="button" aria-pressed="false">SMA 20</button>
+        <button id="chart-indicators" type="button" aria-haspopup="dialog">Indicators</button>
+        <button id="chart-report" type="button" aria-haspopup="dialog">Strategy</button>
       </div>
       <p id="interval-help" class="muted small">Minute and hour intervals are unavailable: this synthetic feed only has daily bars.</p>
       <div class="market-canvas">
@@ -69,13 +76,17 @@
           <button id="chart-zoom-out" type="button" aria-label="Zoom out" title="Zoom out">−</button>
           <button id="chart-reset" type="button" aria-label="Reset chart view" title="Reset chart view">↺</button>
         </div>
-        <div id="market-chart" class="chart" role="img" aria-label="Historical synthetic candlestick price chart"></div>
+        <div class="chart-stack">
+          <div id="market-chart" class="chart" role="img" aria-label="Historical synthetic candlestick price chart"></div>
+          <div id="rsi-pane" hidden><span class="rsi-label">RSI 14 · Wilder</span><div id="rsi-chart" role="img" aria-label="Relative strength index, 14 candle periods"></div></div>
+        </div>
         <p id="chart-empty" class="chart-empty" role="status" hidden></p>
       </div>
       <div class="market-chart-foot">
         <span id="chart-readout" class="small muted" aria-live="off">Crosshair shows OHLC · UTC</span>
         <button id="chart-log" type="button" aria-pressed="false">Log</button>
       </div>
+      <div id="overlay-readout" class="overlay-readout" hidden><span id="overlay-summary"></span><button id="clear-overlay" type="button">Clear</button></div>
       <p id="market-meta" class="muted small" role="status"></p>
       <div class="market-filters" role="group" aria-label="Date range">
         <span class="sub">Range</span>
@@ -84,6 +95,32 @@
         <button type="button" data-range="0" aria-pressed="false">All</button>
         <span class="sub">UTC · historical</span>
       </div>
+      <dialog id="indicator-dialog" class="chart-dialog" aria-labelledby="indicator-title">
+        <div class="browse-heading"><h1 id="indicator-title">Indicators</h1><button id="close-indicators" type="button" aria-label="Close indicators">✕</button></div>
+        <div class="dialog-content"><p class="small muted">Indicators use the selected candle interval. They are calculated from available synthetic history before the visible range is cropped.</p>
+          <div class="indicator-options"><button id="chart-volume" type="button" aria-pressed="true">Volume</button><button id="chart-sma" type="button" aria-pressed="false">SMA 20</button><button id="chart-rsi" type="button" aria-pressed="false">RSI 14</button></div>
+          <p class="small muted">RSI uses Wilder smoothing over 14 price changes. Flat prices read 50; missing data restarts warmup.</p>
+        </div>
+      </dialog>
+      <dialog id="report-overlay-dialog" class="chart-dialog" aria-labelledby="report-overlay-title">
+        <div class="browse-heading"><h1 id="report-overlay-title">Strategy on chart</h1><button id="close-report-overlay" type="button" aria-label="Close strategy overlay">✕</button></div>
+        <div class="dialog-content">
+          <p class="note">Display recorded fills from a Veyra backtest report. This does not run a strategy or place a trade.</p>
+          <section aria-labelledby="chart-runs-title">
+            <div class="chart-runs-heading"><h2 id="chart-runs-title">Saved backtests</h2><button id="chart-runs-refresh" type="button" class="small">Refresh</button></div>
+            <p class="small muted">Choose a recorded simulation to show its fills here. A validated selection can switch to its matching synthetic asset.</p>
+            <p id="chart-runs-status" class="small" role="status"></p>
+            <ul id="chart-run-list" class="chart-run-list"></ul>
+            <button id="chart-runs-more" type="button" class="small" hidden>Load older runs</button>
+            <p id="chart-run-selection-status" class="small" role="status"></p>
+          </section>
+          <label for="report-file">Import report JSON</label><input id="report-file" type="file" accept="application/json,.json">
+          <p class="small muted">Read locally in this browser. Select the report's synthetic asset first. Source hashes are checked; imported fill claims are not independently verified.</p>
+          <p id="report-import-status" class="small" role="status"></p>
+          <div id="overlay-details" hidden><h2>Recorded simulation fills</h2><p id="overlay-source" class="small"></p><p id="overlay-evidence" class="small muted"></p><p class="small muted">Click a marked chart candle to inspect its fills.</p><ol id="overlay-fill-list" class="fill-list"></ol></div>
+          <a id="overlay-backtest-link" class="small" href="#runs">Browse backtest history</a>
+        </div>
+      </dialog>
       <dialog id="asset-browser" aria-labelledby="browse-title">
         <div class="browse-heading"><h1 id="browse-title">Browse assets</h1><button id="close-browse" type="button" aria-label="Close browse assets">✕</button></div>
         <label for="browse-search" class="sr-only">Search all assets</label>
@@ -100,45 +137,80 @@
     </section>
 
     <section id="view-code" class="view" hidden>
-      <div class="section-heading"><h1>Python Studio</h1><span class="badge">Private workspace</span></div>
+      <div class="section-heading"><h1>Python Studio</h1><div class="compact-actions"><span class="badge">Private workspace</span><button type="button" id="import-strategy">Import snapshot</button></div></div>
+      <div class="compact-actions library-storage"><label for="project-store">Storage</label><select id="project-store" aria-describedby="workspace-mode"><option value="cloud" disabled>Cloud workspace</option><option value="device" selected>This device</option></select></div>
       <p id="workspace-mode" class="note"></p>
       <form id="new-project-form" class="row">
         <label for="new-project-name" class="sr-only">New strategy name</label>
         <input id="new-project-name" placeholder="New strategy name" required maxlength="120">
-        <button type="submit">Create</button>
+        <button id="create-project" type="submit">Create on device</button>
       </form>
+      <p id="new-project-status" class="small" role="status" aria-live="polite"></p>
       <p class="muted small">Start with a blank Python strategy. Add a template from the assistant when you need one.</p>
       <div class="row strategy-filters">
         <div><label for="project-search">Find strategy</label><input id="project-search" type="search" placeholder="Search name or description"></div>
         <div><label for="project-folder">Folder</label><select id="project-folder"><option value="">All folders</option></select></div>
       </div>
-      <ul id="project-list" class="cards"></ul>
+      <div class="section-heading"><p id="projects-scope" class="small muted" role="status" aria-live="polite"></p><button type="button" id="refresh-projects">Refresh</button></div>
+      <ul id="project-list" class="cards" aria-describedby="projects-scope"></ul>
+      <dialog id="strategy-import-dialog" aria-labelledby="strategy-import-title">
+        <form id="strategy-import-form">
+          <div class="section-heading"><h2 id="strategy-import-title">Import strategy snapshot</h2><button type="button" id="close-strategy-import" aria-label="Close snapshot import">✕</button></div>
+          <p class="note">Read locally. Create a new private copy in this browser, even with an account connected. No source is uploaded or executed.</p>
+          <label for="strategy-import-file">Strategy snapshot JSON</label><input id="strategy-import-file" type="file" accept="application/json,.json" aria-describedby="strategy-import-limit">
+          <p id="strategy-import-limit" class="small muted">Up to 2 MiB JSON, 50 Python files and 256 KiB of source.</p>
+          <div id="strategy-import-preview" hidden>
+            <label for="strategy-import-name">Name for the new device copy</label><input id="strategy-import-name" required maxlength="120" autocomplete="off" disabled>
+            <dl id="strategy-import-details" class="receipt"></dl>
+            <h3>Included files</h3><ul id="strategy-import-files"></ul>
+            <p class="note">Starts at saved version 1. Previous versions, run history and other device drafts are not included. Existing strategies and drafts stay unchanged.</p>
+          </div>
+          <p id="strategy-import-status" class="small" role="status" aria-live="polite"></p>
+          <div class="compact-actions"><button type="submit" id="confirm-strategy-import" disabled>Create private device copy</button><button type="button" id="cancel-strategy-import">Cancel</button></div>
+        </form>
+      </dialog>
     </section>
 
     <section id="view-project" class="view" hidden>
       <div class="section-heading">
-        <div><a class="small" href="#code">← All strategies</a><h1 id="project-title">Strategy</h1></div>
-        <div class="compact-actions"><button type="button" id="project-settings">Settings</button><button type="button" id="duplicate-project">Duplicate</button></div>
+        <div><a id="project-library-link" class="small" href="#code/device">← All device strategies</a><h1 id="project-title">Strategy</h1></div>
+        <div class="compact-actions"><button type="button" id="project-history" aria-haspopup="dialog" disabled>History</button><button type="button" id="share-project" aria-haspopup="dialog" disabled>Share</button><button type="button" id="project-settings">Settings</button><button type="button" id="duplicate-project">Duplicate</button></div>
       </div>
       <p id="project-storage" class="muted small"></p>
       <div class="studio-layout">
       <div class="studio-workbench">
-      <div class="editor-heading"><label for="editor-file">Python file</label><select id="editor-file"></select><span id="project-version" class="sub"></span></div>
-      <div class="keys" role="toolbar" aria-label="Insert symbol">
-        <button type="button" data-key="    ">Tab</button>
-        <button type="button" data-key="(">(</button>
-        <button type="button" data-key=")">)</button>
-        <button type="button" data-key=":">:</button>
-        <button type="button" data-key="[">[</button>
-        <button type="button" data-key="]">]</button>
-        <button type="button" data-key="=">=</button>
-        <button type="button" data-key="'">'</button>
-        <button type="button" data-key="_">_</button>
+      <div class="editor-heading"><label for="editor-file">Python file</label><select id="editor-file" disabled></select><span id="project-version" class="sub"></span></div>
+      <div class="file-controls">
+        <div class="compact-actions"><button type="button" id="add-file" aria-haspopup="dialog" disabled>Add file</button><button type="button" id="rename-file" aria-haspopup="dialog" disabled>Rename</button><button type="button" id="remove-file" aria-haspopup="dialog" aria-describedby="file-controls-note" disabled>Remove</button></div>
+        <label for="editor-entrypoint">Entrypoint</label><select id="editor-entrypoint" aria-describedby="file-controls-note" disabled></select>
       </div>
-      <label for="editor" class="sr-only">strategy.py</label>
+      <p id="file-controls-note" class="small muted">File changes stay in your device draft until Save version. Choose another entrypoint before removing its file. Imports are not rewritten.</p>
+      <dialog id="strategy-file-dialog" aria-labelledby="file-dialog-title">
+        <form id="strategy-file-form">
+          <div class="section-heading"><h2 id="file-dialog-title">Add Python file</h2><button type="button" id="close-strategy-file" aria-label="Close file controls">✕</button></div>
+          <p id="file-dialog-notice" class="note"></p>
+          <div id="file-path-field"><label for="file-path">Relative Python path</label><input id="file-path" maxlength="256" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="helpers/signals.py" aria-describedby="file-path-help"><p id="file-path-help" class="small muted">Use letters, numbers, underscores and hyphens. Nested folders are allowed. End with .py.</p></div>
+          <p id="file-dialog-status" class="small" role="status" aria-live="polite"></p>
+          <div class="compact-actions"><button type="submit" id="confirm-strategy-file">Add blank file</button><button type="button" id="cancel-strategy-file">Cancel</button></div>
+        </form>
+      </dialog>
+      <div class="keys" role="group" aria-label="Insert symbol">
+        <button type="button" data-key="    " aria-label="Tab: insert 4 spaces" disabled>Tab</button>
+        <button type="button" data-key="(" aria-label="Insert opening parenthesis" disabled>(</button>
+        <button type="button" data-key=")" aria-label="Insert closing parenthesis" disabled>)</button>
+        <button type="button" data-key=":" aria-label="Insert colon" disabled>:</button>
+        <button type="button" data-key="[" aria-label="Insert opening bracket" disabled>[</button>
+        <button type="button" data-key="]" aria-label="Insert closing bracket" disabled>]</button>
+        <button type="button" data-key="=" aria-label="Insert equals sign" disabled>=</button>
+        <button type="button" data-key="'" aria-label="Insert single quote" disabled>'</button>
+        <button type="button" data-key="_" aria-label="Insert underscore" disabled>_</button>
+      </div>
+      <p id="editor-keyboard-help" class="small muted">Tab inserts 4 spaces. Escape, then Tab moves out; Shift+Tab moves back. Another key or returning to the editor resets Tab to indentation.</p>
+      <label for="editor" id="editor-label" class="sr-only">Python source</label>
       <textarea id="editor" class="editor" spellcheck="false" autocapitalize="off"
-                autocomplete="off" autocorrect="off" wrap="off"></textarea>
-      <div class="editor-footer"><span id="draft-state" class="small muted" role="status"></span><div class="compact-actions"><button type="button" id="recover-draft" hidden>Download recovered drafts</button><button type="button" id="download-code">Download .py</button><button type="button" id="save-version">Save version</button></div></div>
+                autocomplete="off" autocorrect="off" wrap="off" aria-describedby="editor-keyboard-help"></textarea>
+      <div class="editor-footer"><span id="draft-state" class="small muted" role="status"></span><div class="compact-actions"><button type="button" id="recover-draft" hidden>Download recovered drafts</button><button type="button" id="download-code">Download .py</button><button type="button" id="download-snapshot" aria-describedby="snapshot-warning" disabled>Download snapshot</button><button type="button" id="save-version">Save version</button></div></div>
+      <p id="snapshot-warning" class="small muted">A snapshot contains the complete private source, including unsaved edits in every file. Keep the downloaded JSON private. Earlier history is not included.</p>
       <section class="studio-assistant" aria-labelledby="assistant-title">
         <div class="assistant-heading"><h2 id="assistant-title">Code assistant</h2><span class="badge">Built-in · offline</span></div>
         <p class="muted small">No AI model is connected. This private helper offers tested Python templates and explicit parameter edits. It does not run your code.</p>
@@ -147,7 +219,19 @@
         <form id="assistant-form" class="row"><label for="assistant-prompt" class="sr-only">Ask the built-in helper</label><input id="assistant-prompt" maxlength="500" placeholder="Try: set fast to 12" autocomplete="off" required><button type="submit">Ask</button></form>
         <div id="assistant-proposal" class="proposal" hidden>
           <p class="small">Review the proposed replacement for the current file. Applying keeps it as an unsaved edit.</p>
-          <div class="proposal-diff"><div><h3>Current</h3><pre id="assistant-before"></pre></div><div><h3>Proposed</h3><pre id="assistant-after"></pre></div></div>
+          <p id="assistant-diff-summary" class="small" role="status" aria-live="polite"></p>
+          <p id="assistant-diff-note" class="small muted"></p>
+          <p id="assistant-review-warning" class="small muted">Whitespace or indentation changes can change Python behavior; this helper has not validated or run the code.</p>
+          <div id="assistant-diff-review">
+            <label class="proposal-whitespace"><input id="assistant-show-whitespace" type="checkbox" checked> Show whitespace in diff</label>
+            <p id="assistant-diff-legend" class="small muted">− removed, + added; left number: line before proposal, right: proposed line. · space, ⇥ tab, ⟦U+…⟧ other whitespace. End badges show LF, CRLF, CR, or no final newline. Whitespace and line-ending changes count as edits.</p>
+            <div id="assistant-diff-scroll" class="proposal-lines" tabindex="0" role="region" aria-label="Line-by-line proposal review" aria-describedby="assistant-diff-legend"><ol id="assistant-diff-lines" aria-label="Proposed source changes"></ol></div>
+          </div>
+          <details id="assistant-full-source">
+            <summary>Complete before-proposal and proposed source</summary>
+            <p class="small muted">Full source is shown as text without diff markers. Line breaks may look alike here; LF/CRLF/CR totals and final-newline state are listed for each source. Apply uses the exact proposed source, including whitespace and line endings.</p>
+            <div class="proposal-diff"><div><h3 id="assistant-before-title">Before proposal</h3><p id="assistant-before-info" class="small muted"></p><pre id="assistant-before" tabindex="0" aria-labelledby="assistant-before-title" aria-describedby="assistant-before-info"></pre></div><div><h3 id="assistant-after-title">Proposed</h3><p id="assistant-after-info" class="small muted"></p><pre id="assistant-after" tabindex="0" aria-labelledby="assistant-after-title" aria-describedby="assistant-after-info"></pre></div></div>
+          </details>
           <div class="compact-actions"><button type="button" id="assistant-apply">Apply edit</button><button type="button" id="assistant-dismiss">Dismiss</button></div>
         </div>
         <button type="button" id="assistant-undo" hidden>Undo last assistant edit</button>
@@ -173,8 +257,10 @@
               <option value="300">5 min</option>
             </select></div>
         </div>
-        <label for="bt-params">Parameters (JSON)</label>
-        <input id="bt-params" value='{"fast": 10, "slow": 40}' spellcheck="false" autocapitalize="off">
+        <label for="bt-params">Parameter overrides (JSON)</label>
+        <input id="bt-params" value='{}' spellcheck="false" autocapitalize="off" aria-describedby="bt-params-help">
+        <p id="bt-params-help" class="small muted">JSON object, up to 8 KiB and 16 nested objects/arrays. Use strings for exact decimals and integers outside ±9007199254740991.</p>
+        <p class="small muted">Save version before pricing draft changes.</p>
         <button class="primary" type="submit">Get price</button>
       </form>
       <div id="quote-box" class="quote" hidden>
@@ -185,25 +271,216 @@
       </div>
       <a id="strategy-runs-link" class="small" href="#runs" hidden>View strategy backtests</a>
       </aside></div>
+      <dialog id="strategy-history-dialog" class="chart-dialog" aria-labelledby="history-title">
+        <div class="browse-heading"><h1 id="history-title">Saved version history</h1><button id="close-strategy-history" type="button" aria-label="Close saved version history">✕</button></div>
+        <div class="dialog-content">
+          <p class="note">Inspect private saved Python source. Your unsaved editor content stays untouched. Browsing does not upload or execute source.</p>
+          <p id="history-status" class="small" role="status"></p>
+          <button id="history-retry" type="button" hidden>Retry history</button>
+          <label for="history-version">Saved version</label><select id="history-version" disabled></select>
+          <button id="history-more" type="button" hidden>Load older versions</button>
+          <p id="history-version-status" class="small" role="status"></p>
+          <button id="history-version-retry" type="button" hidden>Retry saved source</button>
+          <div id="history-snapshot" hidden>
+            <dl id="history-identity" class="snapshot-identity"></dl>
+            <p class="small muted">All files in this saved version:</p><ul id="history-file-list" class="snapshot-files"></ul>
+            <label for="history-file">Read source file</label><select id="history-file"></select>
+            <pre id="history-source" class="snapshot-source" tabindex="0" aria-label="Read-only saved Python source"></pre>
+            <button id="history-compare" type="button" aria-controls="history-comparison" aria-expanded="false" disabled>Compare with current draft</button>
+            <button id="history-download" type="button" disabled>Download selected saved snapshot</button>
+            <p class="small muted">Keep this download private: it includes every source file. To use it as a new strategy, import the snapshot from Studio and choose a new name. The copy starts at saved v1.</p>
+          </div>
+          <section id="history-comparison" class="proposal" hidden aria-labelledby="history-compare-title">
+            <h2 id="history-compare-title" tabindex="-1">Saved version → current draft</h2>
+            <p id="history-compare-identity" class="small"></p>
+            <p class="small muted">Read-only comparison captured when you clicked Compare. Compare again for newer draft edits. Nothing is saved, applied, uploaded or executed.</p>
+            <p id="history-compare-summary" class="small"></p>
+            <p id="history-compare-entrypoint" class="small"></p>
+            <label for="history-compare-file">Compare source file</label><select id="history-compare-file"></select>
+            <p id="history-diff-summary" class="small" role="status"></p>
+            <p id="history-diff-note" class="small muted"></p>
+            <p class="small muted">Whitespace or indentation changes can change Python behavior. This comparison has not validated or run the code.</p>
+            <div id="history-diff-review">
+              <label class="proposal-whitespace"><input id="history-show-whitespace" type="checkbox" checked> Show whitespace in diff</label>
+              <p id="history-diff-legend" class="small muted">− removed, + added; left number: saved line, right: draft line. · space, ⇥ tab, ⟦U+…⟧ other whitespace. End badges show LF, CRLF, CR, or no final newline. Whitespace and line-ending changes count as edits.</p>
+              <div id="history-diff-scroll" class="proposal-lines" tabindex="0" role="region" aria-label="Saved version and draft line comparison" aria-describedby="history-diff-legend"><ol id="history-diff-lines" aria-label="Saved source to draft changes"></ol></div>
+            </div>
+            <details id="history-full-source">
+              <summary>Complete saved-version and draft source</summary>
+              <p class="small muted">Exact source as text without diff markers. Line breaks may look alike; ending totals and final-newline state are listed for each source. An absent file is distinct from an empty file.</p>
+              <div class="proposal-diff"><div><h3 id="history-before-title"></h3><p id="history-before-info" class="small muted"></p><pre id="history-before" tabindex="0" aria-labelledby="history-before-title" aria-describedby="history-before-info"></pre></div><div><h3 id="history-after-title"></h3><p id="history-after-info" class="small muted"></p><pre id="history-after" tabindex="0" aria-labelledby="history-after-title" aria-describedby="history-after-info"></pre></div></div>
+            </details>
+          </section>
+          <section id="history-project-details" hidden aria-labelledby="history-details-title">
+            <h2 id="history-details-title">Current project details</h2>
+            <p class="small muted">Loaded when History opened and included in the download. Name, description and folder are current project metadata, not part of the selected saved source version. Earlier versions and run history are not included.</p>
+            <dl id="history-details" class="snapshot-identity"></dl>
+          </section>
+          <section id="history-cloud-copy" hidden aria-labelledby="cloud-copy-title">
+            <h2 id="cloud-copy-title">Copy a saved version to cloud</h2>
+            <p id="cloud-copy-availability" class="small muted"></p>
+            <button id="review-cloud-copy" type="button" aria-controls="cloud-copy-review" aria-expanded="false" disabled>Review cloud copy</button>
+            <div id="cloud-copy-review" hidden>
+              <p class="note">Confirm uploads every file in the selected saved version above, its entrypoint, and the metadata below to this private workspace, where workspace members can read it. Private means it is not publicly published. The new strategy starts at v1. Device source and drafts stay unchanged; no history, account credentials, run results or publication settings are copied. No code runs and no public link is created.</p>
+              <p class="small muted">Description and folder come from current project details loaded when History opened, not historical version metadata. Cloud folders use single spaces.</p>
+              <dl id="cloud-copy-details" class="snapshot-identity"></dl>
+              <form id="cloud-copy-form">
+                <label for="cloud-copy-name">Name for the new private cloud strategy</label><input id="cloud-copy-name" required maxlength="120" autocomplete="off" disabled>
+                <div class="compact-actions"><button id="confirm-cloud-copy" type="submit" disabled>Confirm private cloud copy</button><button id="cancel-cloud-copy" type="button">Cancel cloud copy review</button></div>
+              </form>
+              <p id="cloud-copy-status" class="small" role="status" aria-live="polite"></p>
+              <div class="compact-actions"><a id="cloud-copy-inspect" href="#code/cloud">Inspect Cloud workspace</a><a id="cloud-copy-result" hidden>Open new cloud strategy</a><button id="cloud-copy-checked" type="button" hidden>I checked Cloud workspace · start a new review</button></div>
+            </div>
+          </section>
+        </div>
+      </dialog>
       <dialog id="strategy-settings-dialog" aria-labelledby="settings-title">
         <form id="strategy-settings-form">
           <div class="section-heading"><h2 id="settings-title">Strategy settings</h2><button type="button" id="close-strategy-settings" aria-label="Close strategy settings">✕</button></div>
           <label for="settings-name">Name</label><input id="settings-name" required maxlength="120">
           <label for="settings-description">Description</label><textarea id="settings-description" maxlength="2000" rows="3"></textarea>
           <label for="settings-folder">Folder</label><input id="settings-folder" maxlength="80" placeholder="Optional folder name">
-          <p class="note">Private. Public links and collaboration need connected accounts and are not enabled yet.</p>
+          <p class="note">These settings stay private. Use Share to review a separate public snapshot of a saved cloud version. Closing stops queued saves; an already-sent cloud save may still finish.</p>
+          <p id="settings-status" class="small muted" role="status"></p>
           <button type="submit">Save settings</button>
         </form>
       </dialog>
     </section>
 
+    <section id="view-discover" class="view" hidden>
+      <div class="section-heading"><h1>Discover strategies</h1></div>
+      <nav class="compact-actions" aria-label="Discovery library"><a id="discover-public-tab" href="#discover">Public snapshots</a><a id="discover-saved-tab" href="#discover/saved">Saved links</a></nav>
+      <div id="discover-public">
+      <p class="muted small">Browse source shared explicitly by its owner. Code is read-only here; publication does not verify a strategy or its performance.</p>
+      <form id="discover-form" class="row">
+        <label for="discover-search" class="sr-only">Search public title or description</label>
+        <input id="discover-search" type="search" maxlength="120" placeholder="Search public title or description" autocomplete="off">
+        <button type="submit">Search</button>
+      </form>
+      <p id="discover-status" class="small muted" role="status"></p>
+      <ul id="discover-list" class="cards publication-list"></ul>
+      <div class="compact-actions"><button id="discover-prev" type="button" disabled>Previous</button><button id="discover-next" type="button" disabled>Next</button><button id="discover-retry" type="button" hidden>Retry</button></div>
+      </div>
+      <div id="saved-links-library" hidden>
+        <h2>Saved links</h2>
+        <p class="note">Private to this browser on this device, shared across accounts using this browser. No cloud backup. Only a public link, its saved title and your private folder are stored; source is not saved.</p>
+        <p class="small muted">Titles below were saved earlier. Opening a link checks its current availability; a saved link may have been revoked.</p>
+        <div class="row">
+          <label class="sr-only" for="saved-links-search">Search saved titles or private folders</label><input id="saved-links-search" type="search" maxlength="240" autocomplete="off" placeholder="Search saved titles or folders">
+          <label class="sr-only" for="saved-links-folder">Filter private folder</label><select id="saved-links-folder"><option value="">All folders</option></select>
+        </div>
+        <p id="saved-links-status" class="small muted" role="status" aria-live="polite"></p>
+        <ul id="saved-links-list" class="cards publication-list"></ul>
+        <button id="saved-links-retry" type="button" hidden>Retry saved links</button>
+      </div>
+    </section>
+
+    <section id="view-public" class="view" hidden>
+      <a class="small" href="#discover">← Discover strategies</a>
+      <div class="section-heading"><h1 id="public-title">Public strategy</h1><span class="badge">Read-only snapshot</span></div>
+      <p id="public-status" class="small" role="status"></p>
+      <button id="public-retry" type="button" hidden>Retry</button>
+      <div id="public-content" hidden>
+        <p id="public-description" class="publication-description"></p>
+        <p class="note">These are the exact published source files. Viewing or downloading does not execute code, run a backtest, or validate performance. Review any downloaded code before running it elsewhere.</p>
+        <dl id="public-identity" class="snapshot-identity"></dl>
+        <div class="editor-heading"><label for="public-file">Source file</label><select id="public-file"></select></div>
+        <pre id="public-source" class="snapshot-source" tabindex="0" aria-label="Published source code"></pre>
+        <div class="compact-actions"><button id="public-download-file" type="button">Download file</button><button id="public-download-snapshot" type="button">Download source JSON</button><button id="public-copy" type="button">Copy to device</button><button id="public-save-link" type="button" aria-haspopup="dialog" aria-pressed="false">Save link</button></div>
+      </div>
+      <p id="public-save-status" class="small muted" role="status"></p>
+      <a class="small" href="#discover/saved">Saved links on this device</a>
+      <dialog id="public-copy-dialog" aria-labelledby="public-copy-title">
+        <form id="public-copy-form">
+          <div class="section-heading"><h2 id="public-copy-title">Copy to device</h2><button type="button" id="close-public-copy" aria-label="Close public snapshot copy">✕</button></div>
+          <p class="note">Create one new private, editable strategy in this browser, even with an account connected. Device-only storage has no cloud backup. Nothing is uploaded, published or executed.</p>
+          <p class="small muted">All source files and the entrypoint are copied exactly, including license notices. Up to 50 Python files, 256-byte paths and 256 KiB of source; unsupported snapshots are rejected, never shortened.</p>
+          <div id="public-copy-preview" hidden>
+            <dl id="public-copy-details" class="snapshot-identity"></dl>
+            <h3>All included files</h3><ul id="public-copy-files"></ul>
+            <label for="public-copy-name">Fresh name for the private device copy</label><input id="public-copy-name" required maxlength="120" autocomplete="off" disabled>
+            <p class="small muted">The public title is only the default name; choose a new name if it exceeds the local 120-character limit. The new private description and folder start blank; the public description is not copied.</p>
+            <p class="note">Starts at saved v1. Existing strategies and drafts stay unchanged. Previous history, runs and results are not copied. Availability is checked before copying; revoking a public link cannot recall saved copies. A source copy is not proof of performance or permission to use it for trading. Check its license and permissions.</p>
+          </div>
+          <p id="public-copy-status" class="small" role="status" aria-live="polite"></p>
+          <button type="button" id="public-copy-retry" hidden>Check again</button>
+          <div class="compact-actions"><button type="submit" id="confirm-public-copy" disabled>Create private device copy</button><button type="button" id="cancel-public-copy">Cancel</button></div>
+        </form>
+      </dialog>
+    </section>
+
+    <dialog id="saved-link-dialog" aria-labelledby="saved-link-title">
+      <form id="saved-link-form">
+        <div class="section-heading"><h2 id="saved-link-title">Save link on this device</h2><button id="saved-link-close" type="button" aria-label="Close saved link review">✕</button></div>
+        <p class="note">Private to this browser, with no cloud backup, even with an account connected. Saving stores a public link and title only, plus your private folder. It does not save source or guarantee continued public access.</p>
+        <p class="small muted">Saved title</p><p id="saved-link-name" class="publication-description"></p>
+        <label for="saved-link-folder">Private folder (optional)</label><input id="saved-link-folder" maxlength="160" autocomplete="off" list="saved-link-folders" placeholder="Unfiled"><datalist id="saved-link-folders"></datalist>
+        <p class="small muted">Use one folder name, up to 80 characters, without slashes. Leave blank for Unfiled.</p>
+        <p id="saved-link-status" class="small" role="status" aria-live="polite"></p>
+        <div class="compact-actions"><button id="saved-link-confirm" type="submit">Save link on device</button><button id="saved-link-remove" type="button" hidden>Remove saved link</button><button id="saved-link-cancel" type="button">Cancel</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="share-dialog" class="chart-dialog" aria-labelledby="share-title">
+      <div class="browse-heading"><h1 id="share-title">Share a saved snapshot</h1><button id="share-close" type="button" aria-label="Close sharing review">✕</button></div>
+      <div class="dialog-content">
+        <p id="share-availability" class="note"></p>
+        <p id="share-status" class="small" role="status"></p>
+        <form id="share-form" hidden>
+          <fieldset id="share-fields">
+            <label for="share-version">Saved version to publish</label><select id="share-version"></select>
+            <p class="small muted">Unsaved edits are excluded. Every file in the selected saved version becomes public. Check the source for secrets and personal information; files are not sanitized.</p>
+            <p id="share-version-status" class="small" role="status"></p>
+            <div id="share-snapshot" hidden>
+              <dl id="share-identity" class="snapshot-identity"></dl>
+              <p class="small muted">All files to be published:</p><ul id="share-file-list" class="snapshot-files"></ul>
+              <label for="share-file">Review source file</label><select id="share-file"></select>
+              <pre id="share-source" class="snapshot-source" tabindex="0" aria-label="Saved source selected for publication"></pre>
+            </div>
+            <label for="share-public-title">Public title</label><input id="share-public-title" maxlength="120" required autocomplete="off" placeholder="Choose a public title">
+            <label for="share-description">Public description (optional)</label><textarea id="share-description" maxlength="4000" rows="3" placeholder="Choose what to share publicly"></textarea>
+            <label class="publication-consent"><input id="share-consent" type="checkbox" required><span>I confirm that every file in this selected saved version, this public title, and this description will be readable and discoverable by anyone. Revoking the link cannot recall copies others have saved.</span></label>
+            <button id="share-publish" type="submit" disabled>Publish selected snapshot</button>
+          </fieldset>
+        </form>
+        <section id="share-history" hidden aria-labelledby="share-history-title">
+          <div class="section-heading"><h2 id="share-history-title">Published snapshots</h2><div class="compact-actions"><button id="share-refresh" type="button">Refresh links</button></div></div>
+          <p class="small muted">Saved publication receipts, newest first. Refresh checks the newest links; Load older links checks earlier receipts without discarding those already loaded. Revoking removes platform access and discovery; outside copies and responses already in flight cannot be recalled. Your source project remains private.</p>
+          <p id="share-history-status" class="small" role="status"></p>
+          <ul id="share-receipts" class="cards publication-list"></ul>
+          <button id="share-more" type="button" hidden>Load older links</button>
+        </section>
+      </div>
+    </dialog>
+
     <section id="view-runs" class="view" hidden>
-      <h1>Backtests</h1>
+      <div class="section-heading"><h1>Backtests</h1><a id="open-approvals" class="small" href="#approvals">Saved approvals</a></div>
       <p class="muted small">Grouped by strategy, newest activity first. Expand a strategy to see its dated runs.</p>
       <p id="runs-scope" class="small muted"></p>
       <ul id="run-list" class="cards run-groups"></ul>
       <button type="button" id="load-more-runs" hidden>Load older runs</button>
     </section>
+
+    <section id="view-approvals" class="view" hidden>
+      <div class="section-heading"><h1>Saved approvals</h1><a id="approvals-back" class="small" href="#runs">Backtests</a></div>
+      <p class="muted small">Your previously approved backtests, newest first. Opening this view never submits a run. Existing runs open directly.</p>
+      <p class="note">Unused approvals have a fixed 15-minute claim window. An expired reservation can remain held until server recovery completes. This view does not release funds.</p>
+      <div class="compact-actions"><button id="approvals-refresh" type="button">Refresh approvals</button><a id="approvals-all" class="small" href="#approvals" hidden>All strategies</a></div>
+      <p id="approvals-status" class="small muted" role="status" aria-live="polite"></p>
+      <ul id="approval-list" class="cards"></ul>
+      <button id="load-more-approvals" type="button" hidden>Load older approvals</button>
+    </section>
+
+    <dialog id="approval-review-dialog" class="chart-dialog" aria-labelledby="approval-review-title">
+      <div class="browse-heading"><h1 id="approval-review-title">Review saved approval</h1><button id="close-approval-review" type="button" aria-label="Close approval review">✕</button></div>
+      <div class="dialog-content">
+        <p class="note">Uses this exact saved version and original approval. No new quote or reservation is created. Closing after submission does not cancel the request.</p>
+        <dl id="approval-review-details" class="snapshot-identity"></dl>
+        <p id="approval-review-status" class="small" role="status" aria-live="polite"></p>
+        <button id="approval-review-submit" type="button" disabled>Submit approved run</button>
+        <button id="approval-review-refresh" type="button">Refresh approvals</button>
+      </div>
+    </dialog>
 
     <section id="view-run" class="view" hidden>
       <h1>Backtest</h1>
@@ -213,13 +490,50 @@
       <button type="button" id="run-cancel" hidden>Stop run</button>
       <p id="run-error" class="error" hidden></p>
       <div id="run-report" hidden>
+        <p id="run-report-status" class="note" role="status" hidden></p>
         <p id="run-note" class="note"></p>
         <div id="run-profitability" class="profitability"><span class="sub">Percent profitable</span><strong id="run-profitability-value">Unavailable</strong><p id="run-profitability-definition" class="small muted"></p></div>
         <dl id="run-tiles" class="tiles"></dl>
-        <h2>Equity</h2>
+        <h2 id="run-equity-heading">Equity</h2>
         <div id="equity-chart" class="chart short" role="img" aria-label="Equity curve"></div>
+        <section id="run-evidence" aria-label="Recorded report evidence" hidden>
+          <details id="run-equity-values">
+            <summary>Equity values</summary>
+            <p id="run-equity-description" class="small muted">Recorded equity in quote units. Numeric strings are shown exactly; JSON numbers use their parsed value. UTC times retain recorded precision; date-only rows have no recorded time of day.</p>
+            <p id="run-equity-page-status" class="small" role="status" aria-live="polite" aria-atomic="true"></p>
+            <table id="run-equity-table" aria-describedby="run-equity-description run-equity-page-status" hidden>
+              <caption class="sr-only">Recorded equity values</caption>
+              <thead><tr><th scope="col">Row</th><th scope="col">Time (UTC)</th><th scope="col">Equity (quote units)</th></tr></thead>
+              <tbody id="run-equity-rows"></tbody>
+            </table>
+            <div id="run-equity-pages" class="row" role="group" aria-label="Equity value pages" hidden>
+              <button id="run-equity-previous" type="button" aria-controls="run-equity-table" disabled>Previous page</button>
+              <button id="run-equity-next" type="button" aria-controls="run-equity-table" disabled>Next page</button>
+            </div>
+          </details>
+          <details>
+            <summary>Source &amp; reproducibility</summary>
+            <p class="small muted">Recorded with this report. These identifiers are not an independent audit or a new verification of the source and data hashes.</p>
+            <dl id="run-source-details"></dl>
+          </details>
+          <details>
+            <summary>Execution assumptions</summary>
+            <dl id="run-execution-details"></dl>
+            <p class="small muted">1 basis point (bps) = 0.01%. Simulated trading costs are separate from the platform compute charges in the receipt.</p>
+            <h3>Not modeled</h3>
+            <ul id="run-model-limitations"></ul>
+          </details>
+          <details>
+            <summary>Data &amp; quality</summary>
+            <dl id="run-data-details"></dl>
+            <p id="run-quality-summary" class="small"></p>
+            <ul id="run-quality-findings"></ul>
+          </details>
+        </section>
         <h2>Receipt</h2>
+        <p id="run-receipt-status" class="small muted" hidden></p>
         <dl id="run-receipt" class="receipt"></dl>
+        <button type="button" id="show-run-chart" hidden>View recorded fills on chart</button>
         <div class="row">
           <button type="button" data-artifact="report.html">Full report</button>
           <button type="button" data-artifact="trades.csv">Fills CSV</button>
@@ -247,6 +561,7 @@
   <nav class="tabs" aria-label="Main">
     <a href="#markets" data-tab="markets">Markets</a>
     <a href="#code" data-tab="code">Studio</a>
+    <a href="#discover" data-tab="discover">Discover</a>
     <a href="#runs" data-tab="runs">Backtests</a>
     <a href="#wallet" data-tab="wallet">Wallet</a>
   </nav>

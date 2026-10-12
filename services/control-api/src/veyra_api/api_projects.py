@@ -1,12 +1,15 @@
+import base64
+import binascii
 import json
 import re
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from psycopg.errors import UniqueViolation
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from veyra_api.auth import CAN_RESEARCH, ROLES_ALL, Principal, audit, require
 from veyra_api.deps import CurrentUser, db, store
 from veyra_sim import data
@@ -97,6 +100,7 @@ class DuplicateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str | None = Field(default=None, min_length=1, max_length=120)
+    expected_version_no: int | None = Field(default=None, ge=1, le=2147483647, strict=True)
 
     @field_validator("name")
     @classmethod
@@ -119,6 +123,21 @@ def _validate_files(files: dict[str, str], entrypoint: str) -> None:
         raise HTTPException(422, f"project exceeds {MAX_TOTAL_BYTES} bytes")
     if entrypoint not in files:
         raise HTTPException(422, "entrypoint must be one of the files")
+
+
+def _load_snapshot(objects, row):
+    try:
+        content = json.loads(objects.get(row["object_key"]))
+        if not isinstance(content, dict) or set(content) != {"files", "entrypoint"}:
+            raise ValueError("invalid snapshot")
+        parsed = FilesIn.model_validate(content, strict=True)
+        _validate_files(parsed.files, parsed.entrypoint)
+        if digest(content) != row["content_hash"] or parsed.entrypoint != row["entrypoint"]:
+            raise ValueError("snapshot identity changed")
+    except (OSError, ValueError, TypeError, RecursionError, ValidationError, HTTPException) as exc:
+        raise HTTPException(503, "snapshot unavailable") from exc
+    return {"files": parsed.files, "entrypoint": parsed.entrypoint}
+
 
 
 def _snapshot(conn, objects, p: Principal, org_id, project_id, files, entrypoint,
@@ -176,19 +195,49 @@ def bars(dataset_id: str, start: str | None = None, end: str | None = None):
         for b in data.load(dataset_id, start, end)]}
 
 
+def _decode_project_cursor(cursor):
+    try:
+        decoded = json.loads(base64.b64decode(cursor, altchars=b"-_", validate=True))
+        if (not isinstance(decoded, list) or len(decoded) != 2
+                or not all(isinstance(value, str) for value in decoded)):
+            raise ValueError("cursor must contain timestamp and ID strings")
+        stamp, project_id = decoded
+        stamp = datetime.fromisoformat(stamp)
+        project_id = UUID(project_id)
+        if stamp.tzinfo is None:
+            raise ValueError("cursor timestamp must include a timezone")
+        return stamp.astimezone(UTC), project_id
+    except (ValueError, TypeError, OverflowError, binascii.Error) as exc:
+        raise HTTPException(422, "invalid project cursor") from exc
+
+
 @router.get("/orgs/{org_id}/projects")
-def list_projects(org_id: UUID, p: Principal = CurrentUser, database=Depends(db)):
+def list_projects(org_id: UUID, p: Principal = CurrentUser, database=Depends(db),
+                  limit: Annotated[int, Query(ge=1, le=100)] = 100,
+                  cursor: Annotated[str | None, Query(max_length=512)] = None):
     with database.tx() as conn:
         require(conn, p, org_id, ROLES_ALL)
+        conditions, params = ["p.org_id = %s"], [org_id]
+        if cursor is not None:
+            conditions.append("(p.updated_at, p.id) < (%s, %s)")
+            params.extend(_decode_project_cursor(cursor))
+        params.append(limit + 1)
         rows = conn.execute(
             "SELECT p.id, p.name, p.description, p.folder, p.visibility, p.created_at, "
             "p.updated_at, v.id AS latest_version_id, "
             "v.version_no AS latest_version_no FROM projects p "
             "JOIN LATERAL (SELECT id, version_no FROM project_versions "
             "WHERE project_id = p.id ORDER BY version_no DESC LIMIT 1) v ON true "
-            "WHERE p.org_id = %s ORDER BY p.updated_at DESC, p.id DESC LIMIT 100",
-            (org_id,)).fetchall()
-    return {"projects": rows}
+            "WHERE " + " AND ".join(conditions) +
+            " ORDER BY p.updated_at DESC, p.id DESC LIMIT %s", params).fetchall()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    next_cursor = None
+    if has_more:
+        last = rows[-1]
+        next_cursor = base64.urlsafe_b64encode(json.dumps(
+            [last["updated_at"].isoformat(), str(last["id"])]).encode()).decode()
+    return {"projects": rows, "next_cursor": next_cursor, "has_more": has_more}
 
 
 def _insert_project(conn, p, org_id, name, description, folder):
@@ -257,12 +306,14 @@ def duplicate_project(project_id: UUID, body: DuplicateIn | None = None,
     with database.tx() as conn:
         source = _load_project(conn, p, project_id, CAN_RESEARCH)
         latest = conn.execute(
-            "SELECT object_key FROM project_versions WHERE project_id = %s "
-            "ORDER BY version_no DESC LIMIT 1", (project_id,)).fetchone()
+            "SELECT object_key, content_hash, entrypoint, version_no FROM project_versions "
+            "WHERE project_id = %s ORDER BY version_no DESC LIMIT 1", (project_id,)).fetchone()
         if latest is None:
             raise HTTPException(409, "project has no saved version to duplicate")
-        content = json.loads(objects.get(latest["object_key"]))
-        _validate_files(content["files"], content["entrypoint"])
+        if (body is not None and body.expected_version_no is not None
+                and body.expected_version_no != latest["version_no"]):
+            raise HTTPException(409, "project version changed; reload before duplicating")
+        content = _load_snapshot(objects, latest)
         n = 1
         while True:
             suffix = " copy" if n == 1 else f" copy {n}"
@@ -280,6 +331,35 @@ def duplicate_project(project_id: UUID, body: DuplicateIn | None = None,
         audit(conn, p, source["org_id"], "project.duplicate", f"project:{proj['id']}",
               {"source_project_id": str(project_id)})
     return proj | {"latest_version": version}
+
+
+@router.get("/projects/{project_id}/versions")
+def list_versions(project_id: UUID, p: Principal = CurrentUser, database=Depends(db),
+                  limit: Annotated[int, Query(ge=1, le=100)] = 50,
+                  before_version: Annotated[int | None, Query(ge=1, le=2147483647)] = None):
+    with database.tx() as conn:
+        proj = _load_project(conn, p, project_id, ROLES_ALL)
+        conditions, params = ["project_id = %s", "org_id = %s"], [project_id, proj["org_id"]]
+        if before_version is not None:
+            conditions.append("version_no < %s")
+            params.append(before_version)
+        # One statement keeps the count and page consistent with concurrent saves.
+        rows = conn.execute(
+            "SELECT v.id, v.version_no, v.content_hash, v.entrypoint, v.created_at, c.total_count "
+            "FROM (SELECT count(*) AS total_count FROM project_versions "
+            "WHERE project_id = %s AND org_id = %s) c LEFT JOIN "
+            "(SELECT id, version_no, content_hash, entrypoint, created_at FROM project_versions "
+            "WHERE " + " AND ".join(conditions) + " ORDER BY version_no DESC LIMIT %s) v "
+            "ON true ORDER BY v.version_no DESC",
+            [project_id, proj["org_id"], *params, limit + 1]).fetchall()
+    total_count = rows[0]["total_count"]
+    versions = [row for row in rows if row["id"] is not None]
+    for version in versions:
+        version.pop("total_count")
+    has_more = len(versions) > limit
+    versions = versions[:limit]
+    return {"versions": versions, "total_count": total_count, "has_more": has_more,
+            "next_before_version": versions[-1]["version_no"] if has_more else None}
 
 
 @router.post("/projects/{project_id}/versions", status_code=201)
@@ -300,7 +380,7 @@ def get_version(project_id: UUID, version_no: int, p: Principal = CurrentUser,
                          "version_no = %s", (project_id, version_no)).fetchone()
     if v is None:
         raise HTTPException(404, "not found")
-    content = json.loads(objects.get(v["object_key"]))
+    content = _load_snapshot(objects, v)
     v.pop("object_key")
     return v | content
 

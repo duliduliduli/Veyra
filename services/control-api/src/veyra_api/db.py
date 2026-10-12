@@ -28,6 +28,7 @@ class Database:
 def migrate(url: str) -> list[str]:
     applied = []
     with psycopg.connect(url, autocommit=False) as conn:
+        conn.execute("SET LOCAL lock_timeout = '5s'; SET LOCAL statement_timeout = '60s'")
         conn.execute("SELECT pg_advisory_xact_lock(7426001)")
         conn.execute("""CREATE TABLE IF NOT EXISTS schema_migrations (
             version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())""")

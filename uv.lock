@@ -564,12 +564,12 @@ requires-dist = [
 
 [[package]]
 name = "veyra-sdk"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "packages/python-sdk" }
 
 [[package]]
 name = "veyra-sim"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "runtimes/simulator" }
 dependencies = [
     { name = "veyra-sdk" },

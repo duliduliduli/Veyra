@@ -20,7 +20,7 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 class StrategyError(RuntimeError):
@@ -63,24 +63,31 @@ class StrategyProcess:
     def __init__(self, files: dict[str, str], entrypoint: str, limits: SandboxLimits):
         self.limits = limits
         self.deadline: float | None = None  # time.monotonic() value set by the runner
-        self.workdir = Path(tempfile.mkdtemp(prefix="veyra-strategy-"))
-        for rel, content in files.items():
-            target = (self.workdir / rel).resolve()
-            if not target.is_relative_to(self.workdir):
-                raise StrategyError(f"illegal path {rel!r}")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content)
-        entry = (self.workdir / entrypoint).resolve()
-        if not entry.is_relative_to(self.workdir) or not entry.is_file():
-            raise StrategyError(f"entrypoint {entrypoint!r} not found")
-        env = {"PATH": "/usr/bin:/bin", "PYTHONHASHSEED": "0", "PYTHONDONTWRITEBYTECODE": "1",
-               "HOME": str(self.workdir), "LANG": "C.UTF-8"}
-        self.proc = subprocess.Popen(
-            [sys.executable, "-I", "-m", "veyra_sdk.host", str(entry)],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            cwd=self.workdir, env=env, text=True, bufsize=1,
-            preexec_fn=_child_setup(limits),  # noqa: PLW1509 - required for rlimits
-        )
+        self.workdir = Path(tempfile.mkdtemp(prefix="veyra-strategy-")).resolve()
+        try:
+            if entrypoint not in files:
+                raise StrategyError("entrypoint must be one of the snapshot files")
+            for rel, content in files.items():
+                path = PurePosixPath(rel)
+                target = (self.workdir / rel).resolve()
+                if (path.is_absolute() or path.as_posix() != rel or ".." in path.parts
+                        or "\\" in rel or path.suffix != ".py"
+                        or not target.is_relative_to(self.workdir)):
+                    raise StrategyError(f"illegal path {rel!r}")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(content.encode("utf-8"))
+            entry = self.workdir / entrypoint
+            env = {"PATH": "/usr/bin:/bin", "PYTHONHASHSEED": "0", "PYTHONDONTWRITEBYTECODE": "1",
+                   "HOME": str(self.workdir), "LANG": "C.UTF-8"}
+            self.proc = subprocess.Popen(
+                [sys.executable, "-I", "-m", "veyra_sdk.host", str(entry)],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                cwd=self.workdir, env=env, text=True, bufsize=1,
+                preexec_fn=_child_setup(limits),  # noqa: PLW1509 - required for rlimits
+            )
+        except BaseException:
+            shutil.rmtree(self.workdir, ignore_errors=True)
+            raise
         self._out: queue.Queue[str | None] = queue.Queue()
         threading.Thread(target=self._pump_stdout, daemon=True).start()
         threading.Thread(target=self._pump_stderr, daemon=True).start()

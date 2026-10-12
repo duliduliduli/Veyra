@@ -1,11 +1,12 @@
-"""Moving-average crossover template.
+"""Moving-average crossover example, not an investment recommendation.
 
-Goes all-in when the fast SMA crosses above the slow SMA; exits when it crosses below.
+Uses alloc of available cash on an upward crossover; exits on a downward crossover.
+Next-open fills are not guaranteed.
 Parameters: fast (int), slow (int), alloc (fraction of cash per entry, str/Decimal).
 """
 
 from collections import deque
-from decimal import ROUND_FLOOR, Decimal
+from decimal import ROUND_FLOOR, Decimal, InvalidOperation
 
 from veyra_sdk import Strategy
 
@@ -13,11 +14,22 @@ from veyra_sdk import Strategy
 class SmaCross(Strategy):
     def initialize(self, config, instrument):
         super().initialize(config, instrument)
-        self.fast = int(config.get("fast", 10))
-        self.slow = int(config.get("slow", 40))
-        self.alloc = Decimal(str(config.get("alloc", "0.95")))
-        if not 0 < self.fast < self.slow:
-            raise ValueError("require 0 < fast < slow")
+        try:
+            fast = config.get("fast", 10)
+            slow = config.get("slow", 40)
+            if any(type(value) not in (int, str) for value in (fast, slow)):
+                raise ValueError
+            self.fast, self.slow = int(fast), int(slow)
+            if not 1 <= self.fast < self.slow <= 10000:
+                raise ValueError
+        except ValueError:
+            raise ValueError("require integer windows with 1 <= fast < slow <= 10000") from None
+        try:
+            self.alloc = Decimal(str(config.get("alloc", "0.95")))
+        except InvalidOperation:
+            raise ValueError("require finite 0 < alloc <= 1") from None
+        if not self.alloc.is_finite() or not Decimal("0") < self.alloc <= Decimal("1"):
+            raise ValueError("require finite 0 < alloc <= 1")
         self.closes = deque(maxlen=self.slow)
         self.prev_diff = None
 

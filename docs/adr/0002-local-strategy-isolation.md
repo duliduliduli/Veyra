@@ -21,6 +21,21 @@ process has:
 The trusted simulator keeps the clock, fills, balances and all bars in *its* memory.
 The strategy only ever receives the bar that just closed and returns bounded intents.
 
+## Enforced scheduler gate
+
+The current `Worker` accepts only exact `APP_ENV=local` or `APP_ENV=test` values.
+Production, staging, unknown values and case variants are rejected. The scheduler's
+`worker` and `all` modes (including the default mode) check this before migrations,
+database pool creation, object-store initialization or starting the reaper thread.
+Direct `Worker` construction applies the same check. There is no override flag.
+This checks resolved settings; the existing default for an unset `APP_ENV` remains
+`local`.
+
+The `reaper`-only mode remains available in other environments: it handles expired
+leases and settlement without executing strategy source. This gate does not add
+filesystem or network isolation and must not be replaced by labeling a production
+deployment `local` or `test`.
+
 ## What this does NOT provide (production gates, spec §5.3/§18.2)
 
 - **No filesystem isolation.** The process can read anything the worker's user can

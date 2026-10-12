@@ -56,7 +56,7 @@ if (logicOnly) {
     charts: Object.fromEntries(['candles', 'marketLine', 'volume', 'sma'].map((key) =>
       [key, { setData: (bars) => { if (key === 'candles') rendered = bars; } }])),
     marketChart: () => ({ timeScale: () => ({ fitContent() {} }) }),
-    chartColors: () => ({ line: '#ccc', accent: '#f60' }), assetName: (ds) => ds.instrument_id,
+    updateChartResearch() {}, chartColors: () => ({ line: '#ccc', accent: '#f60' }), assetName: (ds) => ds.instrument_id,
   };
   const { aggregate, render } = runInNewContext(`${source.slice(start, end)}; ${source.slice(renderStart, renderEnd)};
     ({ aggregate: aggregateBars, render: renderMarketChart })`, context);
