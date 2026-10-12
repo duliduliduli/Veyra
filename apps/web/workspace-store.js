@@ -36,20 +36,43 @@
     return { name, description, folder };
   }
 
+  function dataValue(object, key) {
+    const property = Object.getOwnPropertyDescriptor(object, key);
+    if (property && !own(property, "value")) fail("Snapshot fields must be plain data");
+    return property?.value;
+  }
+
+  function validateFilePath(path) {
+    if (typeof path !== "string" || path.length > 256 || PATH.exec(path)?.[0] !== path) {
+      fail("Use a relative .py path up to 256 characters, with letters, numbers, underscores, hyphens and optional folders");
+    }
+    return path;
+  }
+
   function snapshot(input) {
-    if (!record(input) || !record(input.files)) fail("Python files are required");
-    const entries = Object.entries(input.files);
+    if (!record(input)) fail("Python files are required");
+    const files = dataValue(input, "files");
+    if (!record(files)) fail("Python files are required");
+    const entries = Object.keys(files).map((path) => [path, dataValue(files, path)]);
     if (!entries.length || entries.length > 50) fail("Between 1 and 50 files are required");
     let total = 0;
     const encoder = new TextEncoder();
     for (const [path, content] of entries) {
-      if (!PATH.test(path)) fail(`Invalid Python file path: ${path}`);
+      // Existing long paths stay readable; the new-path control has the portable 256-byte limit.
+      if (PATH.exec(path)?.[0] !== path) fail(`Invalid Python file path: ${path}`);
       if (typeof content !== "string") fail(`File content must be text: ${path}`);
+      for (let i = 0; i < content.length; i++) {
+        const code = content.charCodeAt(i);
+        if (code >= 0xd800 && code <= 0xdbff) {
+          const next = content.charCodeAt(++i);
+          if (!(next >= 0xdc00 && next <= 0xdfff)) fail("Python source must contain valid UTF-8 text");
+        } else if (code >= 0xdc00 && code <= 0xdfff) fail("Python source must contain valid UTF-8 text");
+      }
       total += encoder.encode(content).length;
     }
     if (total > 256 * 1024) fail("Project exceeds 256 KiB of Python source");
-    const entrypoint = input.entrypoint === undefined ? "strategy.py" : input.entrypoint;
-    if (typeof entrypoint !== "string" || !own(input.files, entrypoint)) {
+    const supplied = dataValue(input, "entrypoint"), entrypoint = supplied === undefined ? "strategy.py" : supplied;
+    if (typeof entrypoint !== "string" || !own(files, entrypoint)) {
       fail("Entrypoint must be one of the files");
     }
     return { files: Object.fromEntries(entries), entrypoint };
@@ -94,12 +117,15 @@
     return data;
   }
 
-  function create(storage = root.localStorage) {
-    if (!storage || typeof storage.getItem !== "function" || typeof storage.setItem !== "function") {
-      fail("Browser storage is unavailable. Enable local storage to save strategies on this device.", 503, "STORAGE_UNAVAILABLE");
+  function create(storage) {
+    if (storage === undefined) {
+      try { storage = root.localStorage; } catch { storage = null; }
     }
 
     function read() {
+      if (!storage || typeof storage.getItem !== "function" || typeof storage.setItem !== "function") {
+        fail("Browser storage is unavailable. Enable local storage to save strategies on this device.", 503, "STORAGE_UNAVAILABLE");
+      }
       let raw;
       try { raw = storage.getItem(KEY); }
       catch { fail("Could not read browser storage. Saved strategies were left unchanged.", 503, "STORAGE_READ_FAILED"); }
@@ -183,6 +209,14 @@
       duplicateProject(id, input = {}) {
         const data = read(), project = find(data, id);
         if (!record(input)) fail("Project details are required");
+        if (input.expected_version_no !== undefined) {
+          if (!Number.isInteger(input.expected_version_no) || input.expected_version_no < 1 || input.expected_version_no > 2147483647) {
+            fail("The expected version number must be a positive integer");
+          }
+          if (input.expected_version_no !== project.latest_version_no) {
+            fail("This strategy changed in another tab. Reopen the latest version before duplicating it.", 409, "VERSION_CONFLICT");
+          }
+        }
         let name = input.name;
         if (name === undefined) {
           let number = 1;
@@ -198,5 +232,5 @@
     };
   }
 
-  return { create };
+  return { create, validateSnapshot: snapshot, validateFilePath };
 });

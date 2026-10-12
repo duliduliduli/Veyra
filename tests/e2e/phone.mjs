@@ -40,8 +40,11 @@ try {
   await page.click('text=Get price');
   const quote = await (await quoteResponse).json();
   await page.waitForSelector('#approve:visible');
-  // The button must show the same maximum the server formatted.
-  assert.ok((await page.textContent('#approve')).includes(quote.estimate.display.maximum));
+  // Approval displays every nano-USD in the exact accepted ceiling.
+  const maximum = BigInt(quote.customer_max_nano).toString().padStart(10, '0');
+  const exactMaximum = `$${maximum.slice(0, -9)}.${maximum.slice(-9)}`;
+  assert.equal(await page.textContent('#q-max'), exactMaximum);
+  assert.ok((await page.textContent('#approve')).includes(exactMaximum));
   // Changing an input invalidates the quote.
   await page.fill('#bt-cash', '20000');
   assert.equal(await page.isVisible('#quote-box'), false, 'stale quote still approvable');

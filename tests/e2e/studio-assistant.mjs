@@ -9,6 +9,7 @@ const require = createRequire(import.meta.url);
 const assistant = require("../../apps/web/studio-assistant.js");
 const { propose, applyProposal, templates } = assistant;
 const ask = (prompt, code = templates.sma_cross) => propose({ code, prompt });
+const legacy = JSON.parse(readFileSync(new URL("../fixtures/studio_templates_v1.json", import.meta.url), "utf8"));
 
 test("capabilities clearly identify an unconfigured, non-networked helper", () => {
   assert.equal(assistant.source, "built-in-offline");
@@ -93,6 +94,42 @@ test("previous template edits remain editable and preserve CRLF line endings", (
   assert.match(third.proposed_code, /"alloc", "0.25"/);
   assert.equal(third.proposed_code.replace(/\r\n/g, "").includes("\n"), false);
   assert.equal(ask("set alloc to 0.25", third.proposed_code).status, "info");
+});
+
+test("v1 templates retain their behavior and exact source through parameter-only edits", () => {
+  for (const [name, original] of Object.entries(legacy)) {
+    assert.notEqual(original, templates[name], "New creation selects an explicit revised template");
+    for (const code of [original, original.replace(/\n/g, "\r\n")]) {
+      const changed = ask("set alloc to 0.5", code);
+      assert.equal(changed.status, "proposal");
+      assert.equal(changed.proposed_code, code.replace('"alloc", "0.95"', '"alloc", "0.5"'));
+      assert.equal(applyProposal(code, changed).code, changed.proposed_code);
+      assert.equal(ask("set alloc to 0.5", changed.proposed_code).status, "info");
+      const again = ask("set alloc to 0.25", changed.proposed_code);
+      assert.equal(again.proposed_code, code.replace('"alloc", "0.95"', '"alloc", "0.25"'));
+      if (name === "sma_cross") {
+        const fast = ask("set fast to 12", again.proposed_code);
+        const slow = ask("set slow to 60", fast.proposed_code);
+        assert.equal(slow.proposed_code, again.proposed_code.replace('"fast", 10', '"fast", 12')
+          .replace('"slow", 40', '"slow", 60'));
+      }
+      assert.equal(ask("set alloc to NaN", code).status, "invalid");
+      assert.equal(ask("set alloc to 0.5", code + "# user comment\n").status, "unsupported");
+      assert.equal(applyProposal(code + "\n", changed).status, "stale");
+    }
+  }
+});
+
+test("replacing a v1 template requires a fresh explicit create proposal and Apply", () => {
+  for (const [name, command] of [["buy_hold", "create buy and hold"], ["sma_cross", "create SMA crossover"]]) {
+    const original = legacy[name];
+    assert.equal(ask("help", original).proposed_code, null);
+    const replacement = ask(command, original);
+    assert.equal(replacement.base_code, original);
+    assert.equal(replacement.proposed_code, templates[name]);
+    assert.match(replacement.message, /review the complete replacement/);
+    assert.equal(applyProposal(original, replacement).code, templates[name]);
+  }
 });
 
 test("invalid input, bounds, cross-window conflicts and Python expressions fail closed", () => {

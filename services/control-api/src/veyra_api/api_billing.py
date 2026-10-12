@@ -11,6 +11,7 @@ from veyra_api.deps import CurrentUser, db, settings
 from veyra_billing import format_usd, to_nano
 
 router = APIRouter(prefix="/v1")
+dev_webhook_router = APIRouter(prefix="/v1")
 
 
 class TopupIn(BaseModel):
@@ -55,7 +56,7 @@ def create_topup(org_id: UUID, body: TopupIn, p: Principal = CurrentUser,
     return row | {"note": "No credit is added until the provider's signed webhook confirms."}
 
 
-@router.post("/webhooks/payments/dev", status_code=200)
+@dev_webhook_router.post("/webhooks/payments/dev", status_code=200)
 async def payment_webhook(request: Request, database=Depends(db), cfg=Depends(settings),
                           veyra_signature: str | None = Header(default=None)):
     raw = await request.body()

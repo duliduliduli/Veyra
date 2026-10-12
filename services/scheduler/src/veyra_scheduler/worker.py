@@ -10,15 +10,31 @@ import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
 
+from fastapi import HTTPException
+from veyra_api.api_projects import _load_snapshot
 from veyra_api.config import Settings
 from veyra_api.db import Database
-from veyra_api.settlement import RATE_CARDS, record_compute_usage, settle_job
+from veyra_api.settlement import (
+    RATE_CARDS,
+    SettlementIntegrityError,
+    _approved_rates,
+    record_compute_usage,
+    settle_job,
+)
 from veyra_api.storage import ObjectStore
 from veyra_sim import ENGINE_NAME, ENGINE_VERSION, data, engine, metrics, report
 from veyra_sim.report import digest
 from veyra_sim.sandbox import DeadlineExceeded, SandboxLimits, StrategyError, StrategyProcess
 
 log = logging.getLogger("veyra.worker")
+
+
+def require_local_worker(settings: Settings) -> None:
+    if settings.app_env not in ("local", "test"):
+        raise RuntimeError(
+            "Unisolated strategy worker requires APP_ENV=local or test; "
+            "production needs filesystem, network and per-job isolation (ADR 0002)."
+        )
 
 
 class LeaseLost(Exception):
@@ -38,6 +54,7 @@ class Claim:
 class Worker:
     def __init__(self, database: Database, store: ObjectStore, settings: Settings,
                  worker_id: str | None = None):
+        require_local_worker(settings)
         self.db = database
         self.store = store
         self.settings = settings
@@ -71,16 +88,24 @@ class Worker:
 
     def _heartbeat(self, claim: Claim) -> None:
         with self.db.tx() as conn:
-            row = conn.execute(
-                "UPDATE job_attempts a SET heartbeat_at = now(), "
-                "lease_expires_at = now() + make_interval(secs => %s) FROM jobs j "
-                "WHERE a.id = %s AND j.id = a.job_id AND j.fence_token = %s "
-                "AND j.state = 'running' RETURNING j.cancel_requested",
-                (self.settings.job_lease_seconds, claim.attempt_id, claim.fence)).fetchone()
-            if row is None:
+            job = conn.execute(
+                "SELECT state, fence_token, cancel_requested FROM jobs WHERE id = %s FOR UPDATE",
+                (claim.job["id"],)).fetchone()
+            if job is None or job["fence_token"] != claim.fence or job["state"] != "running":
                 claim.lost = True
                 return
-            claim.cancel_requested = row["cancel_requested"]
+            # now() predates the job-lock wait; renew from this statement instead.
+            attempt = conn.execute(
+                "UPDATE job_attempts SET heartbeat_at = statement_timestamp(), "
+                "lease_expires_at = statement_timestamp() + make_interval(secs => %s) "
+                "WHERE id = %s AND job_id = %s AND fence_token = %s AND ended_at IS NULL "
+                "RETURNING id",
+                (self.settings.job_lease_seconds, claim.attempt_id,
+                 claim.job["id"], claim.fence)).fetchone()
+            if attempt is None:
+                claim.lost = True
+                return
+            claim.cancel_requested = job["cancel_requested"]
             conn.execute("UPDATE jobs SET progress = %s WHERE id = %s AND fence_token = %s",
                          (json.dumps(claim.progress), claim.job["id"], claim.fence))
 
@@ -103,13 +128,15 @@ class Worker:
             self.execute(claim)
         except LeaseLost:
             log.warning("lease lost for job %s; discarding attempt output", claim.job["id"])
+        except SettlementIntegrityError as exc:
+            log.error("worker finish held job %s (%s); operator review required",
+                      claim.job["id"], type(exc).__name__)
         return True
 
     def execute(self, claim: Claim) -> None:
         job = claim.job
         cfg = job["config"]
         started = time.monotonic()
-        deadline = started + int(cfg["max_runtime_seconds"])
         stop = threading.Event()
         hb = threading.Thread(target=self._heartbeat_loop, args=(claim, stop), daemon=True)
         hb.start()
@@ -118,7 +145,11 @@ class Worker:
         manifest, bars = {}, []
         try:
             files, manifest, bars, spec = self._prepare(job)
+            deadline = started + int(cfg["max_runtime_seconds"])
             limits = SandboxLimits(cpu_seconds=int(cfg["max_runtime_seconds"]) + 5)
+            model = engine.ExecutionModel(Decimal(str(cfg["taker_fee_bps"])),
+                                          Decimal(str(cfg["slippage_bps"])))
+            starting_cash = Decimal(str(cfg["starting_cash"]))
             with StrategyProcess(files["files"], files["entrypoint"], limits) as proc:
                 proc.deadline = deadline
 
@@ -128,10 +159,8 @@ class Worker:
                 def on_progress(done: int, total: int) -> None:
                     claim.progress = {"bars_done": done, "bars_total": total}
 
-                model = engine.ExecutionModel(Decimal(str(cfg["taker_fee_bps"])),
-                                              Decimal(str(cfg["slippage_bps"])))
                 sim = engine.run(bars, spec.instrument, proc,
-                                 starting_cash=Decimal(str(cfg["starting_cash"])),
+                                 starting_cash=starting_cash,
                                  params=cfg["params"], model=model,
                                  should_stop=should_stop, on_progress=on_progress)
             if claim.lost:
@@ -157,23 +186,48 @@ class Worker:
             hb.join(timeout=5)
 
         elapsed = time.monotonic() - started
-        rates = RATE_CARDS[cfg["rate_version"]]
         # Local model of supplier billing: wall time + provisioning overhead. Platform
         # faults are not billed to the customer. Production replaces this with the
         # supplier's reported task usage, reconciled later (spec §15.5).
-        billed = 0 if platform_fault else math.ceil(elapsed) + rates.startup_overhead_seconds
+        billed = (0 if platform_fault else math.ceil(elapsed)
+                  + RATE_CARDS[cfg["rate_version"]].startup_overhead_seconds)
         self._finish(claim, outcome, error, billed, sim, manifest, bars)
 
     def _prepare(self, job: dict):
-        cfg = job["config"]
-        with self.db.tx() as conn:
-            pv = conn.execute("SELECT * FROM project_versions WHERE id = %s",
-                              (job["project_version_id"],)).fetchone()
-            quote = conn.execute("SELECT request FROM quotes WHERE id = %s",
-                                 (cfg["quote_id"],)).fetchone()
-        content = json.loads(self.store.get(pv["object_key"]))
-        if digest(content) != pv["content_hash"]:
-            raise _PreconditionFailed("code snapshot integrity check failed")
+        try:
+            cfg = job["config"]
+            with self.db.tx() as conn:
+                pv = conn.execute(
+                    "SELECT v.* FROM project_versions v JOIN projects p "
+                    "ON p.id = v.project_id AND p.org_id = v.org_id WHERE v.id = %s",
+                    (job["project_version_id"],)).fetchone()
+                quote = conn.execute("SELECT * FROM quotes WHERE id = %s",
+                                     (cfg["quote_id"],)).fetchone()
+                auth = conn.execute("SELECT * FROM authorizations WHERE id = %s",
+                                    (job["authorization_id"],)).fetchone()
+            if (pv is None or quote is None or auth is None
+                    or not (job["org_id"] == pv["org_id"] == quote["org_id"] == auth["org_id"])
+                    or not (job["project_version_id"] == pv["id"] == quote["project_version_id"])
+                    or job["authorization_id"] != auth["id"] or auth["quote_id"] != quote["id"]
+                    or auth["status"] != "reserved" or auth["input_hash"] != quote["input_hash"]
+                    or auth["reserved_nano"] != quote["customer_max_nano"]
+                    or quote["request"]["project_version_id"] != str(pv["id"])):
+                raise ValueError("approval identity changed")
+            expected = quote["request"] | {
+                "quote_id": str(quote["id"]), "input_hash": quote["input_hash"],
+                "rate_version": quote["rate_version"], "engine": f"{ENGINE_NAME}=={ENGINE_VERSION}",
+            }
+            # Canonical hashes preserve JSON types that Python dict equality conflates.
+            if digest(cfg) != digest(expected):
+                raise ValueError("execution request changed")
+            RATE_CARDS[cfg["rate_version"]].resource_class(cfg["resource_class"])
+        except (KeyError, TypeError, ValueError, RecursionError) as exc:
+            raise _PreconditionFailed(
+                "approved execution inputs are inconsistent; requote") from exc
+        try:
+            content = _load_snapshot(self.store, pv)
+        except HTTPException as exc:
+            raise _PreconditionFailed("code snapshot integrity check failed") from exc
         bars = data.load(cfg["dataset_id"], cfg["start"], cfg["end"])
         spec = data.CATALOG[cfg["dataset_id"]]
         inputs = {"code": pv["content_hash"], "data": data.manifest_hash(bars),
@@ -197,10 +251,14 @@ class Worker:
     def _finish(self, claim, outcome, error, billed, sim, manifest, bars) -> None:
         job, cfg = claim.job, claim.job["config"]
         with self.db.tx() as conn:
-            row = conn.execute("SELECT state, fence_token FROM jobs WHERE id = %s FOR UPDATE",
+            row = conn.execute("SELECT * FROM jobs WHERE id = %s FOR UPDATE",
                                (job["id"],)).fetchone()
             if row["fence_token"] != claim.fence or row["state"] != "running":
                 raise LeaseLost()
+            auth = conn.execute("SELECT * FROM authorizations WHERE id = %s FOR UPDATE",
+                                (row["authorization_id"],)).fetchone()
+            # Validate the claimed billing inputs before usage can look up unknown rates.
+            _approved_rates(conn, job, auth)
             conn.execute("UPDATE job_attempts SET ended_at = now(), end_reason = %s, "
                          "billed_seconds = %s WHERE id = %s",
                          (outcome, billed, claim.attempt_id))

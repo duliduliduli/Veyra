@@ -1,57 +1,68 @@
 # Build status against the master spec
 
-Last updated 2026-10-12. See [overnight progress](overnight-progress.md) for the new Studio/history slice and verification limits. Phase: **P1/P2 groundwork, sprint 1 (spec §30)**, plus the
-first phone app (business synopsis, stage 1).
+Updated 2026-10-12. This document describes the current source candidate, not a
+claim that every feature is deployed. See [overnight progress](overnight-progress.md)
+for verification and publication limits. The latest verified live release is
+commit `bf27d30bed4b7d7f15a20f4d386c3374541de638` from PR #3; later changes remain
+local and unpublished.
 
-## Stage 1 journey (business synopsis) on a phone
+## Functional paths
 
-| Step | Status |
-|---|---|
-| Open the app, study a market | Done: touch candlestick chart, 3M/1Y/All, source and license shown |
-| Develop a strategy | Python Studio: private device-local snapshots without an account, full-file preservation, folder/settings/duplicate, database APIs behind existing authorization |
-| Run a paid backtest | Done: price shown next to Approve; reserve, run, settle |
-| Understand the report | Closed-trade percent profitable with explicit definition, equity chart, receipt, HTML/fill CSV/JSON downloads; older metrics remain unavailable |
-| Return later | Paginated strategy-grouped run history with all runs reachable; device-local strategies persist only in this browser |
-| Watch spending | Done: balance, reserved, spent, usage list |
-| Ask AI to write or change code | Built-in offline template/parameter proposals with preview/apply/undo; clearly not AI. Real model connection remains blocked (spec A17) |
-| Real data, real payments, real accounts | **Blocked on founder**: data contract, Stripe, Clerk |
-| Paper trading, live bots, marketplace | Later stages (3–5) |
-
-## Sprint 1 steps (spec §30)
-
-| # | Step | Status |
+| Journey | Implemented in source | Current limits |
 |---|---|---|
-| 1 | Ownership, brand placeholder, eligible market | **Needs founder.** "Veyra" is used as the placeholder name |
-| 2 | Commercial data/payment decisions | **Needs founder.** Work continues on synthetic data meanwhile |
-| 3 | Repo, environments, account inventory, CI, budget alerts | Repo + CI done. Accounts/alerts need founder (A01–A25) |
-| 4 | Canonical strategy/job/quote schemas + synthetic dataset | Done |
-| 5 | Org/project authorization, private file snapshots | Done (dev identity; Clerk pending) |
-| 6 | Sandbox job without cross-tenant/secret access | Partial. Process-level only, see ADR 0002 |
-| 7 | Exact ledger/reservation + $1 max test job in payment sandbox | Done with the local `dev` provider; Stripe test mode pending |
-| 8 | Basic report with manifest and compute receipt | Done (JSON/HTML/CSV) |
-| 9 | Kill worker mid-run: no double charge, no orphan, correct release | Done, `tests/test_crash_recovery.py` |
-| 10 | Engine benchmark (Nautilus vs LEAN) | Not started (W05) |
+| Study a chart | Chart-first home, distinct search/menu, intervals and visible ranges, SMA/RSI, recorded report fill overlays selected from private saved runs or imported reports | BTC/ETH synthetic daily development data only; no subdaily feed or real-market performance claim. Public browsing survives unavailable browser storage |
+| Write Python | Multi-file Studio, native symbol-button activation, documented Escape/Tab focus exit, entrypoints, private device drafts/snapshots, explicit device/cloud libraries, folders/settings/duplicate, source-preserving backups/imports, explicit reviewed saved-device-version copies to private cloud, saved-version history and read-only current-draft comparison | Device storage is browser-local; denied/unreadable storage fails explicitly without replacing data; production identity integration remains gated; deployed mode has not been read |
+| Import saved helpers | Snapshot-root modules and explicit nested packages in the local development host, exact UTF-8 materialization and single entrypoint execution | Trusted development only; namespace/dependency caveats and production isolation gate remain |
+| Ask for edits | Offline built-in template/parameter proposals with bounded exact-source diff review/apply/undo; disabled provider adapter boundary | No connected model, provider transport or paid AI request |
+| Prepare a backtest | Immutable version/inputs, validated bounded JSON parameters, quote/ceiling, approval, original-key submission, saved approval discovery and manual recovery | Functional development contracts; production accounts and strongly isolated untrusted compute remain blocked |
+| Follow a run | Progress, stop request, receipt, complete paginated strategy/date history | Runtime/reaper deployment is a separate gate; API-only production has no worker/reaper |
+| Understand results | Prominent fee-adjusted closed-trade profitability, explicit denominator, equity curve with an exact recorded-values table and bounded paging, synthetic/incomplete/legacy states, verified artifact bytes, recorded provenance/assumptions/quality details and HTML/CSV/JSON downloads | A simulation is not real trading evidence; unknown metrics stay unavailable |
+| Share chosen source | Explicit immutable public snapshot, independent public metadata, owner history and revocation | No existing private source is silently published; source already delivered cannot be recalled |
+| Save public research links | Private device-only bookmarks, search and folders, guarded move/remove | Stores saved title/link metadata only; availability is checked when opening, no cloud sync or source cache |
+| Reuse public source privately | Reviewed exact-source copy to a fresh private device strategy | No cloud upload or performance history copied; availability checked at the successful anonymous read |
+| Track usage | Exact reservation/settlement ledger and receipt contracts with a development payment stand-in; bounded unused-reservation recovery and fail-closed approval identity checks | No approved production payment provider, fee schedule or hosted compute purchase |
 
-## Work items touched
+The frontend is the existing HTML/CSS/JavaScript application, not an implemented
+Next.js/Monaco rewrite. Existing fonts, colors and compact controls are preserved.
 
-W09 (partial), W11 (synthetic only), W16 (partial), W21 (snapshots, no editor), W24,
-W29, W30, W31 (dev provider), W32 (API only), W33, W34 (runtime cap), W35 (receipts),
-W36, W41 (in-house engine), W42 (fees/slippage only), W44, W46 (HTML/CSV/JSON; no PDF).
+## Release gates
 
-## Blocked on the founder (cannot be done in code)
+- **Draft navigation:** a shared pre-mutation discard guard now protects unpersisted dirty edits, with response-only provisional-navigation handling and a native unload warning request. Cancelled hash traversal restores the active URL by replacing the traversed entry, not its history index; duplicate editor URLs can remain. Native history/unload behavior remains unverified. See [the contract](editor-navigation-contract.md).
 
-- Legal entity, brand/domain, initial countries (W01, A01–A02)
-- A commercial crypto data agreement (W02, A12). No real market data until then.
-- Stripe account and business acceptance review (W03, A10)
-- Vendor accounts: AWS, Vercel, Clerk, Neon, Modal, Resend (A04–A09, A19)
-- Fee/minimum top-up approval (spec §31). The 5% is still a proposal.
+- **Publication:** later candidates are not uploaded or deployed. New explicit
+  approval is pending for `duliduliduli/Veyra` and the existing app deployment branch.
+- **Database verification:** 229 PostgreSQL-dependent tests are staged and unrun
+  locally. The full normal PostgreSQL CI must pass before merging a candidate.
+- **Migration startup:** transaction-local lock/statement limits now precede advisory acquisition. Historical SQL is unchanged; runner upgrade, rollback/retry and contention tests are staged, not executed. Connection acquisition, total startup/commit duration and old-application rollback remain unverified. See [the contract](migration-startup-contract.md).
+- **Held-record resilience:** integrity-corrupted financial records stay held for operator review. The source candidate now continues unrelated worker claims and bounded reaper batches, with per-record rollback and process-local scan cursors that progress past held prefixes. Heartbeat now takes the job lock before its matching live attempt, with statement-time renewal. The active reaper now refreshes exact current attempt identity/expiry after the job lock, using refreshed heartbeat data for billing. Real PostgreSQL concurrency remains unverified; see [the contract](held-record-resilience.md).
+- **Browser verification:** native browser/mobile layout, focus/history behavior
+  and real storage quota checks remain unverified. Named jsdom suites are not a
+  substitute for those checks.
+- **Identity:** an anonymous deployed `/v1/me` check returned 401. The public schema
+  omits local/test development routes, consistent with the retained source gate;
+  exact deployed `APP_ENV` has not been read. Source authentication fails closed
+  outside local/test until a provider is implemented. No credentials, account
+  permissions or deployment configuration were changed for these candidates.
+- **Python:** the resource-limited subprocess lacks filesystem/network isolation.
+  The new local/test worker guard is source-only and depends on the environment
+  being labeled correctly. See [ADR 0002](adr/0002-local-strategy-isolation.md).
+- **Payments:** a source-only local/test development-webhook mount guard is ready.
+  The deployed public schema still includes the payment webhook; its secret/configuration
+  is unverified. An anonymous account 401 does not prove billing endpoints disabled. No live webhook or ledger was changed.
+- **AI:** consent, identity, reviewed model/pricing/privacy, durable accounting,
+  transport, proposal issuance and provider capability must be integrated and
+  tested before a real coding provider is enabled. See [the boundary contract](ai-provider-boundary.md).
 
-## Next engineering steps (no accounts needed)
+## Scope still open
 
-1. Web app (`apps/web`, Next.js): sign-in stub, project editor (Monaco), quote/approve
-   dialog that shows the ceiling next to the button, job progress, report viewer.
-2. Engine benchmark harness (W05) against the golden cases in spec §9.1.
-3. Outbox dispatcher + SSE job progress channel.
-4. Experiments with parent budgets (W37).
-5. Container-based strategy runtime image (ADR 0002 production gate), testable locally
-   with Docker.
+- Real market-data rights and an intraday provider
+- Explicitly authorized production identity/provider/payment configuration
+- Strong untrusted per-job isolation and deployment of approved compute services
+- Paper-trading adapters; live execution requires separate financial authorization
+- Profiles/followers, public text feed/likes/comments, collaboration and in-app chat
+- Production API authentication and metered hosted virtual computers
+- Broader optimization/research pipelines and multi-asset execution fidelity
+
+The master spec's suggested vendors, prices and 5% fee are proposals, not approved
+production choices. A local development result or passing mock test does not mark
+these integrations complete. No live financial execution is enabled by this work.

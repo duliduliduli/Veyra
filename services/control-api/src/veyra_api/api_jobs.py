@@ -1,6 +1,8 @@
 import base64
 import binascii
+import hashlib
 import json
+import math
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Literal
@@ -11,6 +13,7 @@ from pydantic import BaseModel, Field, field_validator
 from veyra_api import ledger
 from veyra_api.auth import CAN_RESEARCH, ROLES_ALL, Principal, audit, require
 from veyra_api.deps import CurrentUser, db, settings, store
+from veyra_api.reservations import claim_expires_at, release_expired_unused
 from veyra_api.settlement import settle_job
 from veyra_billing import RATE_CARD_V1, format_usd, quote_compute, to_nano
 from veyra_sim import ENGINE_NAME, ENGINE_VERSION, data
@@ -35,11 +38,48 @@ class QuoteIn(BaseModel):
     taker_fee_bps: Decimal = Field(default=Decimal("10"), ge=0, le=1000)
     slippage_bps: Decimal = Field(default=Decimal("5"), ge=0, le=1000)
 
-    @field_validator("params")
+    @field_validator("params", mode="before")
     @classmethod
-    def small_params(cls, v: dict) -> dict:
-        if len(json.dumps(v)) > 8192:
-            raise ValueError("params must serialize to at most 8 KiB")
+    def small_params(cls, v):
+        # Safe details avoid echoing invalid floats/Unicode in FastAPI's error JSON.
+        def reject(detail):
+            raise HTTPException(422, detail)
+
+        def string(value):
+            if "\x00" in value or any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+                reject("parameter names and strings must contain valid Unicode without NUL")
+
+        def visit(value, depth):
+            kind = type(value)
+            if kind in (dict, list):
+                if depth > 16:
+                    reject("params must nest at most 16 objects or arrays, including the root")
+                if kind is dict:
+                    for key, child in value.items():
+                        if type(key) is not str:
+                            reject("parameter names must be strings")
+                        string(key)
+                        visit(child, depth + 1)
+                else:
+                    for child in value:
+                        visit(child, depth + 1)
+            elif kind is str:
+                string(value)
+            elif kind in (int, float):
+                if kind is float and not math.isfinite(value):
+                    reject("parameter numbers must be finite")
+                if (kind is int or value.is_integer()) and abs(value) > 9007199254740991:
+                    reject("parameter integers must be within ±9007199254740991; "
+                           "use strings for exact larger values")
+            elif value is not None and kind is not bool:
+                reject("params must contain only JSON values")
+
+        if type(v) is not dict:
+            reject("params must be a JSON object")
+        visit(v, 1)
+        encoded = json.dumps(v, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        if len(encoded.encode("utf-8")) > 8192:
+            reject("params must serialize to at most 8 KiB of UTF-8 JSON")
         return v
 
 
@@ -117,7 +157,7 @@ def authorize(quote_id: UUID, body: AuthorizeIn, p: Principal = CurrentUser,
         existing = conn.execute("SELECT * FROM authorizations WHERE quote_id = %s",
                                 (quote_id,)).fetchone()
         if existing:
-            return existing  # idempotent retry
+            return existing | {"claim_expires_at": claim_expires_at(existing)}  # idempotent retry
         if quote["expires_at"] <= datetime.now(UTC):
             raise HTTPException(410, "quote expired; request a new quote")
         if body.accept_max_nano != quote["customer_max_nano"]:
@@ -133,7 +173,7 @@ def authorize(quote_id: UUID, body: AuthorizeIn, p: Principal = CurrentUser,
             raise HTTPException(402, "insufficient service credit for this maximum") from None
         audit(conn, p, quote["org_id"], "quote.authorize", f"authorization:{auth['id']}",
               {"reserved_nano": auth["reserved_nano"], "input_hash": quote["input_hash"]})
-    return auth
+    return auth | {"claim_expires_at": claim_expires_at(auth)}
 
 
 @router.post("/jobs", status_code=201)
@@ -156,7 +196,12 @@ def create_job(body: JobIn, response: Response, p: Principal = CurrentUser,
                         (auth["id"],)).fetchone():
             raise HTTPException(409, "authorization already used by another job")
         if auth["status"] != "reserved":
-            raise HTTPException(409, "authorization is not active")
+            # A closed authorization without a job is an expired, unused reservation.
+            raise HTTPException(410, "authorization expired; request a new quote")
+        if release_expired_unused(conn, auth):
+            # Returning (rather than raising) commits the release before the 410 response.
+            response.status_code = 410
+            return {"detail": "authorization expired; request a new quote"}
         quote = conn.execute("SELECT * FROM quotes WHERE id = %s", (auth["quote_id"],)).fetchone()
         if quote["input_hash"] != auth["input_hash"]:
             raise HTTPException(409, "authorization does not match quote inputs")
@@ -201,6 +246,98 @@ def _load_job(conn, p, job_id, allowed, lock=False):
         raise HTTPException(404, "not found")
     require(conn, p, job["org_id"], allowed)
     return job
+
+
+def _decode_authorization_cursor(cursor):
+    try:
+        decoded = json.loads(base64.b64decode(cursor, altchars=b"-_", validate=True))
+        if (not isinstance(decoded, list) or len(decoded) != 2
+                or not all(isinstance(value, str) for value in decoded)):
+            raise ValueError("cursor must contain timestamp and ID strings")
+        stamp, authorization_id = decoded
+        stamp = datetime.fromisoformat(stamp)
+        authorization_id = UUID(authorization_id)
+        if stamp.tzinfo is None:
+            raise ValueError("cursor timestamp must include a timezone")
+        return stamp.astimezone(UTC), authorization_id
+    except (ValueError, TypeError, OverflowError, binascii.Error) as exc:
+        raise HTTPException(422, "invalid authorization cursor") from exc
+
+
+def _authorization_request(request, project_version_id):
+    # Preserve saved values, rather than normalizing or replacing approved inputs.
+    try:
+        if not isinstance(request, dict):
+            raise ValueError("invalid saved inputs")
+        saved = {key: request[key] for key in QuoteIn.model_fields if key in request}
+        if len(saved) != len(QuoteIn.model_fields):
+            raise ValueError("incomplete saved inputs")
+        QuoteIn.small_params(saved["params"])
+        encoded = json.dumps(saved, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        if len(encoded.encode("utf-8")) > 16384:
+            raise ValueError("saved inputs exceed discovery bound")
+        validated = QuoteIn.model_validate_json(encoded, strict=True)
+        if validated.project_version_id != project_version_id:
+            raise ValueError("saved version does not match authorization")
+        return saved
+    except (ValueError, TypeError, RecursionError, HTTPException) as exc:
+        raise HTTPException(503, "authorization inputs unavailable") from exc
+
+
+@router.get("/orgs/{org_id}/authorizations")
+def list_authorizations(org_id: UUID, p: Principal = CurrentUser, database=Depends(db),
+                        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+                        cursor: Annotated[str | None, Query(max_length=512)] = None,
+                        project_id: UUID | None = None):
+    with database.tx() as conn:
+        require(conn, p, org_id, CAN_RESEARCH)
+        conditions = ["a.org_id = %s", "a.approved_by = %s"]
+        params = [org_id, p.user_id]
+        if project_id is not None:
+            conditions.append("v.project_id = %s")
+            params.append(project_id)
+        if cursor is not None:
+            conditions.append("(a.created_at, a.id) < (%s, %s)")
+            params.extend(_decode_authorization_cursor(cursor))
+        params.append(limit + 1)
+        rows = conn.execute(
+            "SELECT statement_timestamp() AS as_of, a.id, a.quote_id, v.project_id, "
+            "p.name AS project_name, q.input_hash AS quote_input_hash, "
+            "q.project_version_id, v.version_no, v.content_hash, a.input_hash, q.request, "
+            "a.reserved_nano, a.created_at, a.status, j.id AS job_id, j.state AS job_state "
+            "FROM authorizations a JOIN quotes q ON q.id = a.quote_id AND q.org_id = a.org_id "
+            "JOIN project_versions v ON v.id = q.project_version_id AND v.org_id = a.org_id "
+            "JOIN projects p ON p.id = v.project_id AND p.org_id = a.org_id "
+            "LEFT JOIN jobs j ON j.authorization_id = a.id AND j.org_id = a.org_id WHERE "
+            + " AND ".join(conditions) + " ORDER BY a.created_at DESC, a.id DESC LIMIT %s",
+            params).fetchall()
+        as_of = (rows[0]["as_of"] if rows else
+                 conn.execute("SELECT clock_timestamp() AS as_of").fetchone()["as_of"])
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    next_cursor = None
+    if has_more:
+        last = rows[-1]
+        next_cursor = base64.urlsafe_b64encode(json.dumps(
+            [last["created_at"].isoformat(), str(last["id"])]).encode()).decode()
+    for row in rows:
+        row.pop("as_of")
+        if row.pop("quote_input_hash") != row["input_hash"]:
+            raise HTTPException(503, "authorization inputs unavailable")
+        row["request"] = _authorization_request(row["request"], row["project_version_id"])
+        row["claim_expires_at"] = claim_expires_at(row)
+        job_id, job_state = row.pop("job_id"), row.pop("job_state")
+        row["job"] = {"id": job_id, "state": job_state} if job_id is not None else None
+        if row["job"] is not None:
+            row["recovery_state"] = "used"
+        elif row["status"] == "settled":
+            row["recovery_state"] = "released"
+        elif row["claim_expires_at"] <= as_of:
+            row["recovery_state"] = "expired_pending_release"
+        else:
+            row["recovery_state"] = "claimable"
+    return {"authorizations": rows, "next_cursor": next_cursor, "has_more": has_more,
+            "as_of": as_of}
 
 
 @router.get("/orgs/{org_id}/jobs")
@@ -316,5 +453,15 @@ def get_artifact(report_id: UUID, name: str, p: Principal = CurrentUser,
                                           "sandbox"}
     if download:
         headers["Content-Disposition"] = f'attachment; filename="veyra-{report_id}-{name}"'
-    return Response(objects.get(rep["artifacts"][name]["key"]), media_type=ARTIFACT_TYPES[name],
-                    headers=headers)
+    try:
+        artifact = rep["artifacts"][name]
+        if not isinstance(artifact["key"], str):
+            raise ValueError("invalid artifact key")
+        body = objects.get(artifact["key"])
+        if (not isinstance(body, bytes) or type(artifact["bytes"]) is not int
+                or len(body) != artifact["bytes"]
+                or "sha256:" + hashlib.sha256(body).hexdigest() != artifact["sha256"]):
+            raise ValueError("artifact identity changed")
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(503, "report artifact unavailable") from exc
+    return Response(body, media_type=ARTIFACT_TYPES[name], headers=headers)

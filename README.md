@@ -48,7 +48,10 @@ Open http://localhost:8000 on a phone (same network: use `--host 0.0.0.0` and yo
 computer's IP) or with the browser's phone emulation. Sign in with any email, add test
 credit in Wallet, create a strategy in Code, get a price, approve, and read the report.
 API docs are at `/docs`. The dev sign-in and test payments only exist when `APP_ENV` is
-`local` or `test`.
+`local` or `test` in this source candidate, including the signed development webhook.
+An unset `APP_ENV` still defaults to `local`; verify deployment labels before release.
+The deployed webhook configuration has not been verified. See
+[the source gate](docs/development-payment-webhook-gate.md).
 
 Phone journey test (needs the two commands above running):
 
@@ -69,6 +72,9 @@ npm i --no-save playwright && node tests/e2e/phone.mjs light
    itemized receipt. If the platform overruns the ceiling, the platform absorbs the
    difference.
 
+The 5% fee above is a proposed test rate, not approved production pricing. The current
+payment provider is a development stand-in, not a connected real payment service.
+
 ## Writing a strategy
 
 ```python
@@ -80,5 +86,13 @@ class MyStrategy(Strategy):
             ctx.buy("0.1")             # fills at the NEXT bar's open
 ```
 
-Strategies run in a separate, resource-limited process. They never see future bars, the
-portfolio ledger, or the engine.
+Saved strategies can import helper modules from their snapshot root. Nested
+relative imports use explicit Python packages; the selected entrypoint must define
+one distinct `Strategy` subclass. See the [snapshot import contract](docs/python-snapshot-imports.md)
+for nested entrypoints, initializer files, runtime-name collisions and local test limits.
+
+The SDK sends bars sequentially, but the local resource-limited process does not
+isolate the filesystem or network. Run only trusted local sample code. The worker
+rejects non-local/test environment labels; that guard does not protect a mislabeled
+deployment or turn the process into a sandbox. Production untrusted execution
+remains blocked pending real isolation. See [the isolation ADR](docs/adr/0002-local-strategy-isolation.md).
