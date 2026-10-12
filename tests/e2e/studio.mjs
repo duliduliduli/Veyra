@@ -16,7 +16,8 @@ const scripts = ["workspace-store.js", "studio-assistant.js", "app.js"].map((nam
   readFileSync(new URL(`../../apps/web/${name}`, import.meta.url), "utf8"));
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const dataset = { dataset_id: "synthetic-test", instrument_id: "TEST/USD", provider: "synthetic",
-  coverage_start: "2021-01-01T00:00:00Z", coverage_end: "2025-01-01T00:00:00Z", bars: 1462 };
+  coverage_start: "2021-01-01T00:00:00Z", coverage_end: "2025-01-01T00:00:00Z", bars: 1462,
+  quote_currency: "USD", license: "test fixture" };
 const response = (value, status = 200) => ({ ok: status < 400, status, statusText: String(status), json: async () => plain(value) });
 function deferred() {
   let resolve;
@@ -55,7 +56,7 @@ async function blobText(w, blob) {
   });
 }
 
-async function boot(t, { hash = "#code", user = false, storage = {}, shared, locks = lockManager(), seed, handle } = {}) {
+async function boot(t, { hash = "#code", user = false, storage = {}, shared, locks = lockManager(), randomUUID = true, seed, handle } = {}) {
   const errors = [], calls = [], downloads = [], blobs = new Map();
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (error) => errors.push(error.message));
@@ -63,6 +64,7 @@ async function boot(t, { hash = "#code", user = false, storage = {}, shared, loc
   const w = dom.window, doc = w.document;
   t.after(() => { dom.window.close(); assert.deepEqual(errors, [], "No uncaught DOM errors"); });
   w.TextEncoder = TextEncoder;
+  if (!randomUUID) Object.defineProperty(w.crypto, "randomUUID", { value: undefined });
   if (shared) Object.defineProperty(w, "localStorage", { value: shared });
   if (locks) Object.defineProperty(w.navigator, "locks", { value: locks });
   w.URL.createObjectURL = (blob) => { const url = `blob:https://veyra.test/${blobs.size}`; blobs.set(url, blob); return url; };
@@ -534,4 +536,66 @@ test("edits made during an in-flight save stay unsaved and all files remain in t
   assert.equal(drafts.length, 1);
   assert.equal(JSON.parse(drafts[0][1]).base_version, 2);
   assert.equal(JSON.parse(drafts[0][1]).files["strategy.py"], "# newer unsaved edit\n");
+});
+
+test("unversioned legacy Python drafts remain recovery-only after saving and reopening", async (t) => {
+  const legacy = "# legacy source with no saved-version identity\nprint('recover me')\n";
+  const ui = await boot(t, { seed: (store, w) => {
+    const p = store.createProject({ name: "Legacy recovery", files: { "strategy.py": "# current saved source\n" } });
+    w.localStorage.setItem(`veyra.draft.${p.id}`, legacy);
+    return p;
+  } });
+  const id = ui.seeded.id;
+  await ui.navigate(`#project/${id}`);
+  await until(() => ui.$("project-title").textContent === "Legacy recovery", "legacy recovery editor");
+  assert.equal(ui.$("editor").value, "# current saved source\n", "An unversioned draft cannot replace current saved source");
+  assert.equal(ui.$("draft-state").textContent, "Saved");
+  assert.equal(ui.$("recover-draft").hidden, false);
+  ui.$("recover-draft").click();
+  assert.deepEqual(JSON.parse(await blobText(ui.w, ui.downloads[0].blob)), { project_id: id, drafts: [legacy] });
+  ui.input("editor", "# deliberately saved newer source\n");
+  ui.$("save-version").click();
+  await until(() => ui.$("project-version").textContent === "saved v2", "newer saved version");
+  await ui.navigate("#code");
+  await ui.navigate(`#project/${id}`);
+  await until(() => ui.$("project-title").textContent === "Legacy recovery", "reopened saved strategy");
+  assert.equal(ui.$("editor").value, "# deliberately saved newer source\n");
+  assert.equal(ui.$("draft-state").textContent, "Saved");
+  const reload = await boot(t, { hash: `#project/${id}`, storage: ui.storage() });
+  await until(() => reload.$("project-title").textContent === "Legacy recovery", "fresh session with legacy draft");
+  assert.equal(reload.$("editor").value, "# deliberately saved newer source\n");
+  assert.equal(reload.$("draft-state").textContent, "Saved");
+  assert.equal(reload.store.getVersion(id, 2).files["strategy.py"], "# deliberately saved newer source\n");
+  assert.equal(reload.w.localStorage.getItem(`veyra.draft.${id}`), legacy, "Legacy source must stay recoverable");
+  assert.equal(reload.$("recover-draft").hidden, false);
+  reload.$("recover-draft").click();
+  assert.deepEqual(JSON.parse(await blobText(reload.w, reload.downloads[0].blob)), { project_id: id, drafts: [legacy] });
+});
+
+test("missing randomUUID and Web Locks do not prevent market or Studio reads", async (t) => {
+  const ui = await boot(t, { hash: "#markets", randomUUID: false, locks: null,
+    seed: (store) => store.createProject({ name: "Readable local strategy", files: { "strategy.py": "# saved safely\n" } }),
+    handle: (call) => {
+      if (call.path === "/v1/catalog/datasets/synthetic-test/bars") return response({ bars: [
+        { ts: "2025-01-01T00:00:00Z", open: "10", high: "12", low: "9", close: "11", volume: "100" },
+      ] });
+    },
+  });
+  assert.equal(ui.w.crypto.randomUUID, undefined);
+  assert.equal(ui.w.navigator.locks, undefined);
+  await until(() => ui.$("market-meta").textContent.startsWith("As of"), "public market chart data");
+  assert.equal(ui.$("view-markets").hidden, false);
+  assert.equal(ui.$("chart-empty").hidden, true);
+  assert.equal(ui.$("market-price").textContent, "11 USD");
+  await ui.navigate("#code");
+  assert.match(ui.$("project-list").textContent, /Readable local strategy/);
+  await ui.navigate(`#project/${ui.seeded.id}`);
+  await until(() => ui.$("project-title").textContent === "Readable local strategy", "Studio read without secure-context APIs");
+  assert.equal(ui.$("editor").value, "# saved safely\n");
+  ui.input("editor", "# unsaved edit\n");
+  ui.$("save-version").click();
+  await until(() => ui.$("status").textContent.includes("Web Locks"), "explicit unsupported-save warning");
+  assert.equal(ui.store.getProject(ui.seeded.id).latest_version_no, 1);
+  assert.equal(ui.store.getVersion(ui.seeded.id, 1).files["strategy.py"], "# saved safely\n");
+  assert.match(ui.$("draft-state").textContent, /Unsaved/);
 });

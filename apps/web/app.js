@@ -524,7 +524,7 @@ $("new-project-form").addEventListener("submit", (e) => {
   });
 });
 
-const draftSession = crypto.randomUUID();
+const draftSession = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
 const draftKey = (id = state.project?.id) => `veyra.draft.${id}.${draftSession}`;
 function readDeviceDrafts(id) {
   const prefix = `veyra.draft.${id}`;
@@ -567,7 +567,6 @@ async function showProject(id) {
     const matching = drafts.find(({ value }) => value && value.base_version === v.version_no &&
       value.files && typeof value.files === "object" && Object.keys(value.files).every((f) => Object.hasOwn(files, f) && typeof value.files[f] === "string"));
     if (matching) Object.assign(files, matching.value.files);
-    else if (drafts.some(({ value }) => typeof value?.legacy === "string")) files[v.entrypoint] = drafts.find(({ value }) => typeof value?.legacy === "string").value.legacy;
     if (drafts.length) draftNotice = matching ? "Restored a device draft. Other drafts are retained for recovery." : "Older device drafts are preserved. Download recovered drafts to keep a copy.";
     const recoveryDraft = drafts.length ? JSON.stringify({ project_id: id, drafts: drafts.map(({ content }) => content) }, null, 2) : null;
     state.project = { ...p, id, version: v, files, savedFiles: { ...v.files }, draftStored: true, recoveryDraft };
