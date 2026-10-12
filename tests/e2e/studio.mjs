@@ -12,7 +12,7 @@ import { test } from "node:test";
 const require = createRequire(import.meta.url);
 const { JSDOM, VirtualConsole } = require("jsdom");
 const html = readFileSync(new URL("../../apps/web/index.html", import.meta.url), "utf8");
-const scripts = ["chart-research.js", "workspace-store.js", "studio-assistant.js", "report-evidence.js", "proposal-diff.js", "strategy-backup.js", "saved-links.js", "backtest-params.js", "app.js"].map((name) =>
+const scripts = ["chart-research.js", "chart-tools.js", "workspace-store.js", "studio-assistant.js", "report-evidence.js", "proposal-diff.js", "strategy-backup.js", "saved-links.js", "backtest-params.js", "app.js"].map((name) =>
   readFileSync(new URL(`../../apps/web/${name}`, import.meta.url), "utf8"));
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const dataset = { dataset_id: "synthetic-test", instrument_id: "TEST/USD", provider: "synthetic",
@@ -78,9 +78,10 @@ async function boot(t, { hash = "#code", user = false, storage = {}, shared, loc
   });
   w.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   w.HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new w.Event("close")); };
-  const series = () => ({ values: [], setData(rows) { this.values = rows; }, data() { return this.values; }, setMarkers() {}, applyOptions() {} });
-  w.LightweightCharts = { createChart: () => ({ addLineSeries: series, addCandlestickSeries: series,
-    addHistogramSeries: series, priceScale: () => ({ applyOptions() {} }), timeScale: () => ({ fitContent() {} }),
+  const series = () => ({ values: [], setData(rows) { this.values = rows; }, data() { return this.values; }, setMarkers() {}, applyOptions() {},
+    attachPrimitive() {}, createPriceLine: (line) => line, removePriceLine() {} });
+  w.LightweightCharts = { createChart: () => ({ addLineSeries: series, addCandlestickSeries: series, addBarSeries: series, addAreaSeries: series,
+    addHistogramSeries: series, priceScale: () => ({ applyOptions() {} }), timeScale: () => ({ fitContent() {}, applyOptions() {} }),
     subscribeCrosshairMove() {}, subscribeClick() {}, applyOptions() {} }) };
   for (const [key, value] of Object.entries(storage)) w.localStorage.setItem(key, value);
   if (user) w.localStorage.setItem("veyra.user", "fixture-user");

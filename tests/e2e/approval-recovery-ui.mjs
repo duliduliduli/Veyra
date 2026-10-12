@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 const { JSDOM, VirtualConsole } = createRequire(import.meta.url)("jsdom");
 const html = readFileSync(new URL("../../apps/web/index.html", import.meta.url), "utf8");
-const scripts = ["chart-research.js", "workspace-store.js", "studio-assistant.js", "report-evidence.js", "proposal-diff.js", "strategy-backup.js", "saved-links.js", "backtest-params.js", "app.js"]
+const scripts = ["chart-research.js", "chart-tools.js", "workspace-store.js", "studio-assistant.js", "report-evidence.js", "proposal-diff.js", "strategy-backup.js", "saved-links.js", "backtest-params.js", "app.js"]
   .map(name => readFileSync(new URL(`../../apps/web/${name}`, import.meta.url), "utf8"));
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const org = id(100), project = id(200), version = id(201), jobId = id(300);

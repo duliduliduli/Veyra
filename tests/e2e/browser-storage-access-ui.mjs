@@ -9,7 +9,7 @@ import { test } from "node:test";
 
 const { JSDOM, VirtualConsole } = createRequire(import.meta.url)("jsdom");
 const html = readFileSync(new URL("../../apps/web/index.html", import.meta.url), "utf8");
-const scripts = ["chart-research.js", "workspace-store.js", "studio-assistant.js", "backtest-params.js", "report-evidence.js", "proposal-diff.js", "strategy-backup.js", "saved-links.js", "app.js"]
+const scripts = ["chart-research.js", "chart-tools.js", "workspace-store.js", "studio-assistant.js", "backtest-params.js", "report-evidence.js", "proposal-diff.js", "strategy-backup.js", "saved-links.js", "app.js"]
   .map((name) => readFileSync(new URL(`../../apps/web/${name}`, import.meta.url), "utf8"));
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const id = "11111111-1111-4111-8111-111111111111", versionId = "22222222-2222-4222-8222-222222222222";
@@ -38,11 +38,12 @@ function storage(seed = {}) {
 }
 function chartStub(charts) {
   return { createChart(element) {
-    const scale = { fitContent() {}, getVisibleLogicalRange: () => null, subscribeVisibleLogicalRangeChange() {}, setVisibleLogicalRange() {} };
+    const scale = { fitContent() {}, applyOptions() {}, getVisibleLogicalRange: () => null, subscribeVisibleLogicalRangeChange() {}, setVisibleLogicalRange() {} };
     const chart = { series: [], applyOptions() {}, subscribeClick() {}, subscribeCrosshairMove() {},
       priceScale: () => ({ applyOptions() {} }), timeScale: () => scale };
-    const add = () => { const series = { values: [], setData(values) { this.values = plain(values); }, data() { return this.values; }, applyOptions() {}, setMarkers() {} }; chart.series.push(series); return series; };
-    chart.addCandlestickSeries = chart.addLineSeries = chart.addHistogramSeries = add;
+    const add = () => { const series = { values: [], setData(values) { this.values = plain(values); }, data() { return this.values; }, applyOptions() {}, setMarkers() {},
+      attachPrimitive() {}, createPriceLine: (line) => line, removePriceLine() {} }; chart.series.push(series); return series; };
+    chart.addCandlestickSeries = chart.addLineSeries = chart.addHistogramSeries = chart.addBarSeries = chart.addAreaSeries = add;
     charts.set(element.id, chart); return chart;
   } };
 }

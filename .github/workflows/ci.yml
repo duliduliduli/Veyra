@@ -39,6 +39,7 @@ jobs:
       - run: npm install --prefix /tmp/veyra-test-tools --no-save jsdom@26.1.0
       - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/studio.mjs
       - run: node tests/e2e/chart-research.mjs
+      - run: node --test tests/e2e/chart-tools.mjs
       - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/chart-ui.mjs
       - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/publications.mjs
       - run: node --test tests/e2e/strategy-backup.mjs
@@ -73,3 +74,6 @@ jobs:
       - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/editor-navigation-ui.mjs
 
       - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/saved-chart-runs.mjs
+
+      - run: npm install --prefix /tmp/veyra-test-tools --no-save playwright@1.56.1 && /tmp/veyra-test-tools/node_modules/.bin/playwright install --with-deps chromium
+      - run: NODE_PATH=/tmp/veyra-test-tools/node_modules node --test tests/e2e/chart-workspace-ui.mjs

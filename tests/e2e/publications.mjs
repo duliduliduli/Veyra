@@ -14,7 +14,7 @@ import { test } from "node:test";
 const require = createRequire(import.meta.url);
 const { JSDOM, VirtualConsole } = require("jsdom");
 const html = readFileSync(new URL("../../apps/web/index.html", import.meta.url), "utf8");
-const scripts = ["chart-research.js", "workspace-store.js", "studio-assistant.js", "report-evidence.js", "proposal-diff.js", "strategy-backup.js", "saved-links.js", "app.js"].map((name) =>
+const scripts = ["chart-research.js", "chart-tools.js", "workspace-store.js", "studio-assistant.js", "report-evidence.js", "proposal-diff.js", "strategy-backup.js", "saved-links.js", "app.js"].map((name) =>
   readFileSync(new URL(`../../apps/web/${name}`, import.meta.url), "utf8"));
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const dataset = { dataset_id: "synthetic-test", instrument_id: "TEST/USD", provider: "synthetic",

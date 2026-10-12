@@ -71,7 +71,7 @@ function chartColors() {
   const css = getComputedStyle(document.documentElement);
   const v = (name) => css.getPropertyValue(name).trim();
   return { ink: v("--fg"), muted: v("--muted"), line: v("--line"), bg: v("--panel"),
-    accent: v("--accent"), mono: v("--mono") };
+    accent: v("--accent"), mono: v("--mono"), up: v("--up"), down: v("--down") };
 }
 
 function makeChart(id) {
@@ -239,11 +239,12 @@ function route(event, destination) {
   if (view !== "project") { projectLoad++; state.project = null; }
   if (view !== "project" && $("strategy-settings-dialog").open) closeStrategySettings();
   if (view === "markets" && arg === "browse") openAssetBrowser();
-  if (view !== "markets") for (const id of ["indicator-dialog", "report-overlay-dialog"]) { if ($(id).open) closeResearchDialog(id); }
-  if (view !== "markets" || arg !== "browse") {
-    hideAssetSearch();
-    if ($("asset-browser").open) $("asset-browser").close();
+  if (view !== "markets") {
+    for (const id of ["indicator-dialog", "report-overlay-dialog"]) { if ($(id).open) closeResearchDialog(id); }
+    for (const id of ["intervals-sheet", "draw-sheet", "hub-sheet", "panel-sheet"]) { if ($(id).open) $(id).close(); }
+    leaveChartModes();
   }
+  if ((view !== "markets" || arg !== "browse") && $("asset-browser").open) $("asset-browser").close();
   const tab = { project: "code", public: "discover", run: "runs", approvals: "runs" }[view] || view;
   for (const a of document.querySelectorAll(".tabs a")) {
     if (a.dataset.tab === tab) a.setAttribute("aria-current", "page");
@@ -270,8 +271,6 @@ let marketInterval = "1d";
 let marketRequest = 0;
 let marketBars = [];
 const marketCache = new Map();
-const trendLines = [];
-let trendStart = null;
 
 const assetName = (d) => d.instrument_id.replace(/^SYNTH:/, "");
 const marketNumber = (v) => Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -317,53 +316,53 @@ function aggregateBars(bars, interval) {
 }
 
 function clearTrends() {
-  const chart = charts["market-chart"];
-  trendLines.splice(0).forEach((line) => chart.removeSeries(line));
-  trendStart = null;
+  cancelPlacement();
+  exitReplay(false); // a replay date belongs to the old bars
+  for (const d of drawings.splice(0)) if (d.line) charts["market-chart"]?.removeSeries(d.line);
+  drawingLayer?.set([]);
+  // Drawing positions are bar indexes of the old chart; never undo them onto new bars.
+  undoStack.splice(0, undoStack.length, ...undoStack.filter((entry) => entry.kind !== "drawing"));
+  updateUndo();
 }
 
 function marketChart() {
   const chart = makeChart("market-chart");
   if (charts.candles) return chart;
-  const toolbar = document.querySelector(".intervals");
-  const selected = toolbar.querySelector('[data-interval][aria-pressed="true"]');
-  toolbar.scrollLeft += selected.getBoundingClientRect().left - toolbar.getBoundingClientRect().left
-    - (toolbar.clientWidth - selected.clientWidth) / 2;
   const c = chartColors();
-  charts.candles = chart.addCandlestickSeries({ upColor: c.bg, borderUpColor: c.ink,
-    wickUpColor: c.ink, downColor: c.accent, borderDownColor: c.accent, wickDownColor: c.accent });
+  charts.candles = chart.addCandlestickSeries();
   charts.marketLine = chart.addLineSeries({ color: c.ink, lineWidth: 2, visible: false });
+  charts.marketBarsSeries = chart.addBarSeries({ visible: false });
+  charts.marketArea = chart.addAreaSeries({ lineColor: c.ink, topColor: c.ink + "33", bottomColor: c.ink + "05", lineWidth: 2, visible: false });
+  // Transparent close series: anchors drawings and price conversions for every chart type.
+  charts.anchor = chart.addLineSeries({ color: "rgba(0,0,0,0)", lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false });
+  drawingLayer = new DrawingLayer();
+  charts.anchor.attachPrimitive(drawingLayer);
   chart.priceScale("right").applyOptions({ minimumWidth: 84, scaleMargins: { top: 0.1, bottom: 0.23 } });
   charts.volume = chart.addHistogramSeries({ priceFormat: { type: "volume" }, priceScaleId: "volume" });
   chart.priceScale("volume").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 }, visible: false });
   charts.sma = chart.addLineSeries({ color: c.accent, lineWidth: 1, visible: false,
     lastValueVisible: false, priceLineVisible: false });
+  for (const [key, color, style] of [["sma50", c.up, 0], ["sma200", c.down, 0], ["ema20", c.ink, 2], ["ema50", c.muted, 2],
+    ["bbUpper", c.muted, 0], ["bbMiddle", c.muted, 2], ["bbLower", c.muted, 0]]) {
+    charts[key] = chart.addLineSeries({ color, lineWidth: 1, lineStyle: style, visible: false, lastValueVisible: false,
+      priceLineVisible: false, crosshairMarkerVisible: false });
+  }
+  applyChartSettings();
   chart.subscribeCrosshairMove((param) => {
-    const b = param.seriesData.get(charts.candles);
-    const line = param.seriesData.get(charts.marketLine);
+    const b = param.seriesData.get(charts.candles) ?? param.seriesData.get(charts.marketBarsSeries);
+    const line = param.seriesData.get(charts.marketLine) ?? param.seriesData.get(charts.marketArea);
     $("chart-readout").textContent = b
       ? `O ${marketNumber(b.open)} H ${marketNumber(b.high)} L ${marketNumber(b.low)} C ${marketNumber(b.close)}`
       : line ? `Close ${marketNumber(line.value)} · UTC` : "Crosshair shows OHLC · UTC";
   });
   chart.subscribeClick((param) => {
-    if (selectedOverlay && param.time && $("chart-trend").getAttribute("aria-pressed") !== "true" && overlayGroups.some((group) => group.time === param.time)) {
+    if (placing) return; // drawing taps are read from pointer events below
+
+    if (replay.picking && param.time != null) { startReplayAt(param.time); return; }
+    if (selectedOverlay && param.time && overlayGroups.some((group) => group.time === param.time)) {
       showOverlayFills(param.time);
       openResearchDialog("report-overlay-dialog");
     }
-    if ($("chart-trend").getAttribute("aria-pressed") !== "true" || !param.time || !param.point) return;
-    const active = $("chart-type").value === "line" ? charts.marketLine : charts.candles;
-    const price = active.coordinateToPrice(param.point.y);
-    if (price == null) return;
-    const point = { time: param.time, value: price };
-    if (!trendStart) { trendStart = point; $("chart-readout").textContent = "Select the second point"; return; }
-    if (point.time === trendStart.time) return;
-    const line = chart.addLineSeries({ color: c.accent, lineWidth: 2,
-      lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false });
-    line.setData([trendStart, point].sort((a, b) => a.time - b.time));
-    trendLines.push(line);
-    trendStart = null;
-    $("chart-trend").setAttribute("aria-pressed", "false");
-    $("chart-readout").textContent = "Trend line added · drawings reset when the asset, range or interval changes";
   });
   return chart;
 }
@@ -394,13 +393,15 @@ function renderMarketChart() {
 
 function displayMarketBars(ds, bars) {
   marketBars = bars;
-  $("market-symbol").textContent = assetName(ds);
-  $("market-source").textContent = `${ds.provider} · historical`;
+  showSymbol(ds);
   renderMarketChart();
   const last = bars.at(-1), change = dayChange(bars);
+  const delta = bars.length > 1 ? Number(last.close) - Number(bars.at(-2).close) : null;
   $("market-price").textContent = last ? `${marketNumber(last.close)} ${ds.quote_currency}` : "—";
-  $("market-change").textContent = changeLabel(change);
+  $("market-change").textContent = change == null ? changeLabel(change)
+    : `${change >= 0 ? "▲" : "▼"} ${VeyraChartTools.signed(delta)} (${changeLabel(change)})`;
   $("market-price").parentElement.classList.toggle("loss", change < 0);
+  $("market-price").parentElement.classList.toggle("gain", change > 0);
   $("market-meta").textContent = last
     ? `As of ${last.ts.slice(0, 10)} UTC · ${ds.license}` : "No bars in this dataset.";
 }
@@ -419,8 +420,7 @@ async function showMarkets() {
   if (charts.rsi) { charts.rsi.setData([]); charts.rsiTimeAnchor.setData([]); }
   for (const key of ["candles", "marketLine"]) charts[key]?.setMarkers([]);
   updateOverlay();
-  $("market-symbol").textContent = assetName(ds);
-  $("market-source").textContent = `${ds.provider} · historical`;
+  showSymbol(ds);
   $("market-price").textContent = "—";
   $("market-change").textContent = "";
   $("market-meta").textContent = "Loading historical data…";
@@ -428,7 +428,7 @@ async function showMarkets() {
   $("chart-empty").textContent = "Loading chart…";
   if (charts.candles) {
     clearTrends();
-    for (const key of ["candles", "marketLine", "volume", "sma"]) charts[key].setData([]);
+    for (const key of ["candles", "marketLine", "marketBarsSeries", "marketArea", "anchor", "volume", "sma", ...lineIndicatorSeries]) charts[key].setData([]);
   }
   try {
     const bars = await assetBars(ds);
@@ -444,8 +444,6 @@ async function showMarkets() {
 
 function chooseAsset(id) {
   $("market-dataset").value = id;
-  $("asset-search").value = "";
-  hideAssetSearch();
   if ($("asset-browser").open) $("asset-browser").close();
   showMarkets();
 }
@@ -454,39 +452,9 @@ function matchingAssets(query, provider = "") {
   return state.datasets.filter((d) => (!provider || d.provider === provider) &&
     `${d.instrument_id} ${d.dataset_id} ${d.provider}`.toLowerCase().includes(needle));
 }
-function hideAssetSearch() {
-  $("asset-results").hidden = true;
-  $("asset-search").setAttribute("aria-expanded", "false");
-}
-function searchAssets() {
-  const results = $("asset-results");
-  const assets = matchingAssets($("asset-search").value);
-  results.replaceChildren(...assets.map((d) => {
-    const button = el("button", { type: "button" }, `${assetName(d)} · ${d.provider}`);
-    button.addEventListener("click", () => chooseAsset(d.dataset_id));
-    return button;
-  }));
-  if (!assets.length) results.append(el("p", {}, "No matching assets."));
-  results.hidden = false;
-  $("asset-search").setAttribute("aria-expanded", "true");
-}
-$("asset-search").addEventListener("input", searchAssets);
-$("asset-search").addEventListener("focus", searchAssets);
-$("asset-search").addEventListener("keydown", (e) => {
-  if (e.key === "Escape") hideAssetSearch();
-  if (e.key === "ArrowDown") { e.preventDefault(); $("asset-results").querySelector("button")?.focus(); }
-  if (e.key === "Enter") { e.preventDefault(); $("asset-results").querySelector("button")?.click(); }
-});
-document.addEventListener("click", (e) => {
-  if (!e.target.closest(".market-search-row")) hideAssetSearch();
-});
-$("asset-results").addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { $("asset-search").focus(); hideAssetSearch(); }
-});
-
 function renderAssetBrowser() {
-  const list = $("browse-list");
-  const assets = matchingAssets($("browse-search").value, $("browse-provider").value)
+  const list = $("browse-list"), watched = new Set(chartPrefs.watchlist), watchOnly = $("browse-tab-watch").getAttribute("aria-selected") === "true";
+  const assets = matchingAssets($("browse-search").value, $("browse-provider").value).filter((d) => !watchOnly || watched.has(d.dataset_id))
     .sort((a, b) => assetName(a).localeCompare(assetName(b)) * ($("browse-sort").value === "name-desc" ? -1 : 1));
   list.replaceChildren(...assets.map((d) => {
     const price = el("span", {}, "Loading…");
@@ -498,18 +466,20 @@ function renderAssetBrowser() {
         d.provider, "Daily bars", `${d.coverage_start.slice(0, 10)} – ${d.coverage_end.slice(0, 10)}`,
       ].map((text) => el("span", {}, text))));
     button.addEventListener("click", () => chooseAsset(d.dataset_id));
+    const star = el("button", { type: "button", class: "star", "aria-pressed": String(watched.has(d.dataset_id)), "aria-label": `Watchlist ${assetName(d)}` }, "★");
+    star.addEventListener("click", () => toggleWatch(d.dataset_id));
     assetBars(d).then((bars) => {
       const last = bars.at(-1), delta = dayChange(bars);
       price.textContent = last ? `${marketNumber(last.close)} ${d.quote_currency}` : "No bars";
       change.textContent = changeLabel(delta);
       change.classList.toggle("loss", delta < 0);
+      change.classList.toggle("gain", delta > 0);
     }).catch(() => { price.textContent = "Price unavailable"; });
-    return el("li", {}, button);
+    return el("li", {}, button, star);
   }));
-  if (!assets.length) list.append(el("li", { class: "muted small" }, "No matching assets."));
+  if (!assets.length) list.append(el("li", { class: "muted small" }, watchOnly ? "Your watchlist is empty. Star an asset to add it." : "No matching assets."));
 }
 function openAssetBrowser() {
-  hideAssetSearch();
   const provider = $("browse-provider"), previous = provider.value;
   provider.replaceChildren(el("option", { value: "" }, "All sources"),
     ...[...new Set(state.datasets.map((d) => d.provider))].map((p) => el("option", { value: p }, p)));
@@ -546,33 +516,19 @@ for (const [selector, apply] of [
     if (marketBars.length) renderMarketChart();
   });
 }
+let chartTypeShown = "candles";
 $("chart-type").addEventListener("change", () => {
+  const previous = chartTypeShown, next = $("chart-type").value;
+  chartTypeShown = next;
+  remember(`Change chart type to ${$("chart-type").selectedOptions[0].textContent}`, () => { $("chart-type").value = previous; $("chart-type").dispatchEvent(new Event("change")); });
   marketChart();
-  const candles = $("chart-type").value === "candles";
-  charts.candles.applyOptions({ visible: candles });
-  charts.marketLine.applyOptions({ visible: !candles });
-  $("market-chart").setAttribute("aria-label", `Historical synthetic ${candles ? "candlestick" : "line"} price chart`);
-  updateOverlay();
+  if (marketBars.length) renderMarketChart();
+  $("market-chart").setAttribute("aria-label", `Historical synthetic ${$("chart-type").selectedOptions[0].textContent.toLowerCase()} price chart`);
 });
-for (const [id, apply] of [
-  ["chart-volume", (on) => {
-    charts.volume.applyOptions({ visible: on });
-    charts["market-chart"].priceScale("right").applyOptions({ scaleMargins: { top: 0.1, bottom: on ? 0.23 : 0.1 } });
-  }],
-  ["chart-sma", (on) => {
-    charts.sma.applyOptions({ visible: on });
-    if (on && !charts.sma.data().length) $("chart-readout").textContent = "SMA 20 needs at least 20 source candles at this interval. Try a longer range.";
-  }],
-  ["chart-log", (on) => charts["market-chart"].priceScale("right").applyOptions({ mode: on ? 1 : 0 })],
-  ["chart-crosshair", (on) => charts["market-chart"].applyOptions({ crosshair: { mode: on ? 1 : 2 } })],
-  ["chart-trend", (on) => { trendStart = null; $("chart-readout").textContent = on ? "Select two chart points" : "Crosshair shows OHLC · UTC"; }],
-]) $(id).addEventListener("click", () => {
+$("chart-log").addEventListener("click", () => {
   marketChart();
-  const on = $(id).getAttribute("aria-pressed") !== "true";
-  $(id).setAttribute("aria-pressed", String(on));
-  apply(on);
+  setSetting("log", $("chart-log").getAttribute("aria-pressed") !== "true");
 });
-$("chart-clear").addEventListener("click", clearTrends);
 $("chart-reset").addEventListener("click", () => {
   if (!charts["market-chart"]) return;
   charts["market-chart"].timeScale().fitContent();
@@ -584,6 +540,917 @@ for (const [id, factor] of [["chart-zoom-in", 0.75], ["chart-zoom-out", 1.35]]) 
   const middle = (range.from + range.to) / 2, half = Math.max(2, (range.to - range.from) * factor / 2);
   scale.setVisibleLogicalRange({ from: middle - half, to: middle + half });
 });
+
+// ---------------------------------------------------------------- chart workspace
+// Organized controls: one toolbar row, everything else in bottom sheets.
+const lineIndicatorSeries = ["sma50", "sma200", "ema20", "ema50", "bbUpper", "bbMiddle", "bbLower"];
+const indicatorSeries = { sma20: ["sma"], sma50: ["sma50"], sma200: ["sma200"], ema20: ["ema20"], ema50: ["ema50"], bb: ["bbUpper", "bbMiddle", "bbLower"] };
+const indicatorButtonId = { volume: "chart-volume", sma20: "chart-sma", rsi: "chart-rsi" };
+const INTERVAL_DAYS = { "1d": 1, "3d": 3, "1w": 7, "1M": 30.44, "30w": 210 };
+const activeIndicators = new Set(["volume"]);
+const compareIds = [], compareBars = new Map();
+let chartSettings = { ...VeyraChartTools.SETTINGS }, layoutName = "Unnamed";
+let drawings = [], drawingLayer = null, placing = null, drawingSeq = 0, drawCategory = "lines";
+let replayTimeline = [], alertMarkerList = [], alertLines = [], unseenAlerts = false;
+const replay = { time: null, picking: false, timer: null };
+const currentDataset = () => state.datasets.find((d) => d.dataset_id === $("market-dataset").value);
+const datasetIds = () => state.datasets.map((d) => d.dataset_id);
+const indicatorName = (id) => VeyraChartTools.INDICATORS.find((i) => i.id === id)?.name || id;
+const intervalLabel = (v) => v === "1M" ? "1M" : v.toUpperCase();
+const rgba = (color, alpha) => {
+  const m = /^#([0-9a-f]{6})$/i.exec(color);
+  if (!m) return color;
+  const n = parseInt(m[1], 16);
+  return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${alpha})`;
+};
+function activeSeries() {
+  const type = $("chart-type").value;
+  return { bars: charts.marketBarsSeries, line: charts.marketLine, area: charts.marketArea }[type] ?? charts.candles;
+}
+
+// Device storage is untrusted: every read is validated by VeyraChartTools.
+const chartStore = {
+  read(key, fallback) {
+    try { const raw = browserStorage?.getItem(`veyra.chart.${key}`); return raw == null ? fallback : JSON.parse(raw); } catch { return fallback; }
+  },
+  write(key, value) {
+    try { browserStorage.setItem(`veyra.chart.${key}`, JSON.stringify(value)); return true; }
+    catch { say("Could not save on this device. Browser storage is unavailable or full.", true); return false; }
+  },
+};
+const chartPrefs = {
+  get watchlist() { return VeyraChartTools.watchlist(chartStore.read("watchlist", []), datasetIds()); },
+  get favorites() { return VeyraChartTools.favorites(chartStore.read("favorites", [])); },
+  get alerts() { return VeyraChartTools.alerts(chartStore.read("alerts", []), datasetIds()); },
+  get layouts() { return VeyraChartTools.layouts(chartStore.read("layouts", []), datasetIds()); },
+  get templates() { return VeyraChartTools.templates(chartStore.read("templates", [])); },
+};
+
+// ---------------------------------------------------------------- undo
+const undoStack = [];
+let undoing = false;
+function remember(label, undo, kind = "chart") {
+  if (undoing) return;
+  undoStack.push({ label, undo, kind });
+  if (undoStack.length > 50) undoStack.shift();
+  updateUndo();
+}
+function updateUndo() {
+  const top = undoStack.at(-1);
+  $("chart-undo").disabled = !top;
+  $("chart-undo").setAttribute("aria-label", top ? `Undo: ${top.label}` : "Undo");
+  $("chart-undo").title = top ? `Undo: ${top.label}` : "Nothing to undo";
+}
+$("chart-undo").addEventListener("click", () => {
+  const top = undoStack.pop();
+  if (!top) return;
+  undoing = true;
+  try { top.undo(); } finally { undoing = false; }
+  updateUndo();
+  say(`Undid: ${top.label}`);
+});
+
+// ---------------------------------------------------------------- sheets
+const SHEETS = ["intervals-sheet", "draw-sheet", "hub-sheet", "panel-sheet"];
+function closeSheets(except) { for (const id of SHEETS) if (id !== except && $(id).open) $(id).close(); }
+function openSheet(id) { closeSheets(id); if (!$(id).open) $(id).showModal(); }
+for (const dialog of document.querySelectorAll("dialog.sheet")) {
+  dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.close(); });
+  for (const b of dialog.querySelectorAll("[data-close]")) b.addEventListener("click", () => dialog.close());
+  const handle = dialog.querySelector(".sheet-handle");
+  let start = null;
+  handle?.addEventListener("pointerdown", (e) => { start = e.clientY; handle.setPointerCapture(e.pointerId); });
+  handle?.addEventListener("pointermove", (e) => { if (start != null) dialog.style.transform = `translateY(${Math.max(0, e.clientY - start)}px)`; });
+  handle?.addEventListener("pointerup", (e) => {
+    if (start == null) return;
+    const dragged = e.clientY - start;
+    start = null; dialog.style.transform = "";
+    if (dragged > 80) dialog.close();
+  });
+  handle?.addEventListener("pointercancel", () => { start = null; dialog.style.transform = ""; });
+}
+
+// ---------------------------------------------------------------- header
+function showSymbol(ds) {
+  const name = assetName(ds), [base, quote] = name.split("-");
+  $("market-symbol").textContent = name;
+  $("market-icon").textContent = base.slice(0, 1);
+  $("market-source").textContent = `${base} / ${quote || ds.quote_currency} · ${ds.provider} · historical`;
+  applyChartSettings();
+}
+$("open-intervals").addEventListener("click", () => openSheet("intervals-sheet"));
+for (const b of document.querySelectorAll("[data-interval]")) b.addEventListener("click", () => {
+  if (b.disabled) return;
+  $("open-intervals").firstChild.textContent = `${intervalLabel(b.dataset.interval)} `;
+  if ($("intervals-sheet").open) $("intervals-sheet").close();
+});
+$("chart-fullscreen").addEventListener("click", () => setFullscreen(!document.body.classList.contains("chart-fullscreen")));
+function setFullscreen(on) {
+  document.body.classList.toggle("chart-fullscreen", on);
+  $("chart-fullscreen").setAttribute("aria-pressed", String(on));
+  $("chart-fullscreen").setAttribute("aria-label", on ? "Exit full screen" : "Full screen chart");
+}
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !document.querySelector("dialog[open]")) {
+    if (placing) cancelPlacement(); else if (document.body.classList.contains("chart-fullscreen")) setFullscreen(false);
+  }
+});
+function leaveChartModes() { cancelPlacement(); exitReplay(false); setFullscreen(false); }
+
+// ---------------------------------------------------------------- settings and series styling
+function applyChartSettings() {
+  const chart = charts["market-chart"];
+  if (!chart || !charts.candles) return;
+  const c = chartColors(), s = chartSettings, classic = s.colors === "classic";
+  const up = classic ? c.up : c.ink, down = classic ? c.down : c.accent;
+  const hollow = $("chart-type").value === "hollow" || !classic;
+  const ds = currentDataset(), title = s.symbolLabel && ds ? assetName(ds) : "";
+  charts.candles.applyOptions({ upColor: hollow ? "rgba(0,0,0,0)" : up, borderUpColor: up, wickUpColor: up,
+    downColor: down, borderDownColor: down, wickDownColor: down, priceLineVisible: s.priceLine, title });
+  charts.marketBarsSeries.applyOptions({ upColor: up, downColor: down, priceLineVisible: s.priceLine, title });
+  for (const key of ["marketLine", "marketArea"]) charts[key].applyOptions({ priceLineVisible: s.priceLine, title });
+  chart.applyOptions({ grid: { vertLines: { visible: s.grid }, horzLines: { visible: s.grid } }, crosshair: { mode: s.crosshair ? 1 : 2 } });
+  chart.priceScale("right").applyOptions({ mode: s.log ? 1 : 0 });
+  $("chart-log").setAttribute("aria-pressed", String(s.log));
+}
+function setSetting(key, value) {
+  const previous = chartSettings[key];
+  if (previous === value) return;
+  chartSettings = { ...chartSettings, [key]: value };
+  remember(`${key === "log" ? "Log scale" : "Chart setting"} change`, () => setSetting(key, previous));
+  applyChartSettings();
+  if (marketBars.length) renderMarketChart();
+  if ($("panel-sheet").open && panelName === "settings") openPanel("settings", panelFromHub);
+}
+
+// Runs inside updateChartResearch, after replay has cut future bars.
+function updateChartWorkspace(aggregated, visible) {
+  const chart = charts["market-chart"];
+  if (!chart || !charts.anchor) return;
+  const type = $("chart-type").value, c = chartColors(), classic = chartSettings.colors === "classic";
+  const times = new Set(visible.map((b) => b.time)), closes = visible.map((b) => ({ time: b.time, value: b.close }));
+  charts.candles.setData(type === "heikin" ? VeyraChartTools.heikinAshi(visible) : visible);
+  charts.marketBarsSeries.setData(visible);
+  charts.marketLine.setData(closes);
+  charts.marketArea.setData(closes);
+  charts.anchor.setData(closes);
+  for (const [key, on] of [["candles", ["candles", "hollow", "heikin"].includes(type)], ["marketBarsSeries", type === "bars"],
+    ["marketLine", type === "line"], ["marketArea", type === "area"]]) charts[key].applyOptions({ visible: on });
+  const up = classic ? c.up : c.ink, down = classic ? c.down : c.accent;
+  const volumeOn = activeIndicators.has("volume");
+  charts.volume.setData(visible.map((b) => ({ time: b.time, value: b.volume, color: rgba(b.close >= b.open ? up : down, 0.35) })));
+  charts.volume.applyOptions({ visible: volumeOn });
+  chart.priceScale("right").applyOptions({ scaleMargins: { top: 0.1, bottom: volumeOn ? 0.23 : 0.1 } });
+  // Price-pane indicators use full history up to the replay point, then crop to the visible range.
+  const all = aggregated.map((b) => b.close), bb = VeyraChartTools.bollinger(all);
+  const values = { sma: VeyraChartTools.sma(all, 20), sma50: VeyraChartTools.sma(all, 50), sma200: VeyraChartTools.sma(all, 200),
+    ema20: VeyraChartTools.ema(all, 20), ema50: VeyraChartTools.ema(all, 50), bbUpper: bb.upper, bbMiddle: bb.middle, bbLower: bb.lower };
+  const missing = [];
+  for (const [id, keys] of Object.entries(indicatorSeries)) {
+    for (const key of keys) {
+      const data = aggregated.map((b, i) => ({ time: b.time, value: values[key][i] })).filter((p) => p.value != null && times.has(p.time));
+      charts[key].setData(data);
+      charts[key].applyOptions({ visible: activeIndicators.has(id) });
+      if (activeIndicators.has(id) && !data.length && !missing.includes(id)) missing.push(id);
+    }
+  }
+  if (missing.length) $("chart-readout").textContent = `${missing.map(indicatorName).join(", ")}: not enough candles at this interval. Try a longer range.`;
+  updateMacd(aggregated, visible);
+  const lowerPanes = [!$("rsi-pane").hidden, !$("macd-pane").hidden];
+  chart.applyOptions({ timeScale: { visible: !lowerPanes.some(Boolean) } });
+  charts["rsi-chart"]?.applyOptions({ timeScale: { visible: lowerPanes[0] && !lowerPanes[1] } });
+  updateCompare(visible, times);
+  updateAlerts(visible);
+  for (const d of drawings) if (d.line) d.line.setData(d.series.map((v, i) => v == null || !visible[i] ? null : { time: visible[i].time, value: v }).filter(Boolean));
+  drawingLayer?.set(drawingShapes());
+}
+
+function makeMacdChart() {
+  if (charts["macd-chart"]) return charts["macd-chart"];
+  const chart = makeChart("macd-chart"), c = chartColors();
+  chart.applyOptions({ handleScroll: false, handleScale: false }); // follows the price pane
+  charts.macdHist = chart.addHistogramSeries({ priceLineVisible: false, lastValueVisible: false });
+  charts.macdLine = chart.addLineSeries({ color: c.ink, lineWidth: 1, priceLineVisible: false });
+  charts.macdSignal = chart.addLineSeries({ color: c.accent, lineWidth: 1, priceLineVisible: false });
+  chart.priceScale("right").applyOptions({ minimumWidth: 84 });
+  charts["market-chart"].timeScale().subscribeVisibleLogicalRangeChange((range) => {
+    if (range && !$("macd-pane").hidden) chart.timeScale().setVisibleLogicalRange(range);
+  });
+  return chart;
+}
+function updateMacd(aggregated, visible) {
+  if ($("macd-pane").hidden) return;
+  const chart = makeMacdChart(), c = chartColors(), m = VeyraChartTools.macd(aggregated.map((b) => b.close));
+  const index = new Map(aggregated.map((b, i) => [b.time, i]));
+  const point = (arr, extra = () => ({})) => visible.map((b) => {
+    const v = arr[index.get(b.time)];
+    return v == null ? { time: b.time } : { time: b.time, value: v, ...extra(v) };
+  });
+  charts.macdHist.setData(point(m.histogram, (v) => ({ color: rgba(v >= 0 ? c.up : c.down, 0.5) })));
+  charts.macdLine.setData(point(m.macd));
+  charts.macdSignal.setData(point(m.signal));
+  chart.timeScale().setVisibleLogicalRange(charts["market-chart"].timeScale().getVisibleLogicalRange());
+}
+
+function setIndicator(id, on, record = true) {
+  if (activeIndicators.has(id) === on) return;
+  if (on) activeIndicators.add(id); else activeIndicators.delete(id);
+  if (record) remember(`${on ? "Add" : "Remove"} ${indicatorName(id)}`, () => setIndicator(id, !on, false));
+  $("rsi-pane").hidden = !activeIndicators.has("rsi");
+  $("macd-pane").hidden = !activeIndicators.has("macd");
+  for (const b of document.querySelectorAll(`[data-indicator="${id}"]`)) b.setAttribute("aria-pressed", String(on));
+  marketChart();
+  if (marketBars.length) renderMarketChart();
+}
+
+// ---------------------------------------------------------------- compare and alerts
+function updateCompare(visible, times) {
+  const chart = charts["market-chart"], colors = [chartColors().accent, "#6366f1", "#0ea5e9"];
+  charts.compare ??= new Map();
+  for (const [id, series] of charts.compare) if (!compareIds.includes(id) || id === $("market-dataset").value) { chart.removeSeries(series); charts.compare.delete(id); }
+  compareIds.forEach((id, i) => {
+    const ds = state.datasets.find((d) => d.dataset_id === id);
+    if (!ds || id === $("market-dataset").value) return; // never compare a symbol with itself
+    if (!compareBars.has(id)) {
+      compareBars.set(id, null);
+      assetBars(ds).then((bars) => { compareBars.set(id, bars); if (marketBars.length) renderMarketChart(); })
+        .catch(() => { compareBars.delete(id); say(`${assetName(ds)} could not be loaded for comparison.`, true); });
+      return;
+    }
+    const bars = compareBars.get(id);
+    if (!bars) return;
+    const other = aggregateBars(bars, marketInterval).filter((b) => times.has(b.time));
+    if (!charts.compare.has(id)) charts.compare.set(id, chart.addLineSeries({ color: colors[i % 3], lineWidth: 2, priceLineVisible: false, title: `${assetName(ds)} rebased` }));
+    // Rebased onto this chart's first visible close so both read on one price scale.
+    const base = visible[0]?.close, start = other[0]?.close;
+    charts.compare.get(id).setData(base && start ? other.map((b) => ({ time: b.time, value: b.close * base / start })) : []);
+  });
+}
+function updateAlerts(visible) {
+  const c = chartColors(), ds = currentDataset();
+  for (const line of alertLines.splice(0)) charts.anchor.removePriceLine(line);
+  alertMarkerList = [];
+  for (const alert of chartPrefs.alerts.filter((a) => a.dataset === ds?.dataset_id)) {
+    alertLines.push(charts.anchor.createPriceLine({ price: alert.level, color: c.accent, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "Alert" }));
+    for (const hit of VeyraChartTools.crossings(visible, alert.level)) {
+      alertMarkerList.push({ time: hit.time, position: hit.direction === "up" ? "belowBar" : "aboveBar", shape: "circle", color: c.accent, text: "Alert" });
+    }
+  }
+}
+const alertMarkers = () => [...alertMarkerList].sort((a, b) => a.time - b.time);
+function setUnseenAlerts(on) {
+  unseenAlerts = on;
+  $("hub-dot").hidden = !on;
+  const tileDot = document.querySelector('[data-hub="alerts"] .dot');
+  if (tileDot) tileDot.hidden = !on;
+}
+
+// ---------------------------------------------------------------- drawings
+class DrawingLayer {
+  constructor() {
+    this.items = [];
+    this.requestUpdate = () => {};
+    const layer = this;
+    this.views = [{ zOrder: () => "top", renderer: () => ({ draw: (target) => layer.draw(target) }) }];
+  }
+  attached({ chart, series, requestUpdate }) { this.chart = chart; this.series = series; this.requestUpdate = requestUpdate; }
+  detached() { this.requestUpdate = () => {}; }
+  paneViews() { return this.views; }
+  updateAllViews() {}
+  set(items) { this.items = items; this.requestUpdate(); }
+  draw(target) {
+    if (!this.chart || !this.items.length) return;
+    const scale = this.chart.timeScale(), series = this.series, colors = chartColors();
+    target.useMediaCoordinateSpace(({ context, mediaSize }) => {
+      for (const item of this.items) drawShape(context, item, (l) => scale.logicalToCoordinate(l), (p) => series.priceToCoordinate(p), colors, mediaSize);
+    });
+  }
+}
+function drawShape(g, s, x, y, c, size) {
+  const col = (key, alpha = 1) => rgba(c[key] || c.accent, alpha);
+  const pt = (p) => { const px = x(p.logical), py = y(p.price); return px == null || py == null ? null : [px, py]; };
+  const fillStroke = (path) => {
+    if (s.fill) { g.fillStyle = col(s.fill, s.alpha ?? 0.15); g.fill(path); }
+    if (s.stroke) { g.strokeStyle = col(s.stroke); g.stroke(path); }
+  };
+  g.save();
+  g.lineWidth = s.width || 1;
+  g.setLineDash(s.dash ? [5, 4] : []);
+  g.strokeStyle = col(s.color || "accent");
+  switch (s.type) {
+    case "line": case "path": {
+      const pts = (s.points || [s.a, s.b]).map(pt);
+      if (pts.some((p) => !p)) break;
+      g.beginPath();
+      pts.forEach(([px, py], i) => (i ? g.lineTo(px, py) : g.moveTo(px, py)));
+      g.stroke();
+      if (s.arrow) {
+        const [[x1, y1], [x2, y2]] = pts.slice(-2), a = Math.atan2(y2 - y1, x2 - x1);
+        g.setLineDash([]);
+        g.beginPath(); g.moveTo(x2, y2);
+        g.lineTo(x2 - 10 * Math.cos(a - 0.4), y2 - 10 * Math.sin(a - 0.4));
+        g.lineTo(x2 - 10 * Math.cos(a + 0.4), y2 - 10 * Math.sin(a + 0.4));
+        g.closePath(); g.fillStyle = g.strokeStyle; g.fill();
+      }
+      break;
+    }
+    case "hline": {
+      const py = y(s.price);
+      if (py != null) { g.beginPath(); g.moveTo(0, py); g.lineTo(size.width, py); g.stroke(); }
+      break;
+    }
+    case "rect": {
+      const a = pt(s.a), b = pt(s.b);
+      if (!a || !b) break;
+      const path = new Path2D();
+      path.rect(Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.abs(b[0] - a[0]) || 1, Math.abs(b[1] - a[1]) || 1);
+      fillStroke(path);
+      break;
+    }
+    case "poly": {
+      const pts = s.points.map(pt);
+      if (pts.some((p) => !p)) break;
+      const path = new Path2D();
+      pts.forEach(([px, py], i) => (i ? path.lineTo(px, py) : path.moveTo(px, py)));
+      path.closePath();
+      fillStroke(path);
+      break;
+    }
+    case "circle": {
+      const a = pt(s.center), b = pt(s.edge);
+      if (!a || !b) break;
+      const path = new Path2D();
+      path.arc(a[0], a[1], Math.hypot(b[0] - a[0], b[1] - a[1]), 0, Math.PI * 2);
+      fillStroke(path);
+      break;
+    }
+    case "candle": {
+      const xo = x(s.logical), next = x(s.logical + 1), ys = [s.high, s.low, s.open, s.close].map(y);
+      if (xo == null || next == null || ys.some((v) => v == null)) break;
+      const [yh, yl, yo, yc] = ys, color = col(s.close >= s.open ? "up" : "down", 0.5), w = Math.max(2, (next - xo) * 0.6);
+      g.setLineDash([]); g.strokeStyle = color; g.fillStyle = color;
+      g.beginPath(); g.moveTo(xo, yh); g.lineTo(xo, yl); g.stroke();
+      g.fillRect(xo - w / 2, Math.min(yo, yc), w, Math.max(1, Math.abs(yc - yo)));
+      break;
+    }
+    case "point": {
+      const a = pt(s.at);
+      if (a) { g.fillStyle = col("accent"); g.beginPath(); g.arc(a[0], a[1], 5, 0, Math.PI * 2); g.fill(); }
+      break;
+    }
+    case "label": {
+      const a = pt(s.at);
+      if (!a) break;
+      g.font = `11px ${c.mono}`;
+      const text = s.text.length > 64 ? `${s.text.slice(0, 63)}…` : s.text, w = g.measureText(text).width + 10;
+      const lx = Math.min(Math.max(4, a[0] + 6), size.width - w - 4), ly = Math.max(4, a[1] - 24);
+      g.fillStyle = rgba(c.ink, 0.88); g.fillRect(lx, ly, w, 18);
+      g.fillStyle = c.bg; g.fillText(text, lx + 5, ly + 13);
+      break;
+    }
+  }
+  g.restore();
+}
+function drawingShapes() {
+  const shapes = drawings.filter((d) => !d.hidden).flatMap((d) => [...d.shapes,
+    { type: "label", at: d.points.reduce((top, p) => (p.price > top.price ? p : top), d.points[0]), text: d.tag }]);
+  if (placing) shapes.push(...placing.points.map((at) => ({ type: "point", at })));
+  return shapes;
+}
+function addDrawing(d) {
+  if (d.series) d.line = charts["market-chart"].addLineSeries({ color: chartColors().accent, lineWidth: 2, priceLineVisible: false, lastValueVisible: false, title: "AVWAP" });
+  drawings.push(d);
+  if (marketBars.length) renderMarketChart();
+  remember(`Add ${d.name}`, () => removeDrawing(d, false), "drawing");
+}
+function removeDrawing(d, record = true) {
+  if (!drawings.includes(d)) return;
+  drawings = drawings.filter((x) => x !== d);
+  if (d.line) charts["market-chart"].removeSeries(d.line);
+  d.line = null;
+  drawingLayer?.set(drawingShapes());
+  if (record) remember(`Remove ${d.name}`, () => addDrawing(d), "drawing");
+}
+function startPlacement(id) {
+  closeSheets();
+  exitReplay(false);
+  if (!marketBars.length || !charts.anchor) { say("Load a chart before drawing.", true); return; }
+  cancelPlacement();
+  placing = { tool: VeyraChartTools.toolById(id), points: [] };
+  // Projecting tools need empty space past the latest bar to tap into or to show their result.
+  if (["long", "short", "forecast", "bars-pattern", "ghost-feed", "sector"].includes(id)) {
+    const scale = charts["market-chart"].timeScale(), range = scale.getVisibleLogicalRange(), last = visibleStudyBars.length - 1;
+    if (range && range.to < last + 12) scale.setVisibleLogicalRange({ from: range.from, to: last + 12 });
+  }
+  $("draw-bar").hidden = false;
+  updatePlacement();
+}
+function updatePlacement() {
+  const { tool, points } = placing;
+  $("draw-hint").textContent = `${tool.name} · ${tool.help} ${points.length ? `(${points.length} placed)` : ""}`;
+  $("draw-finish").hidden = !(tool.minPoints && points.length >= tool.minPoints);
+  for (const b of document.querySelectorAll("#draw-tiles .tile")) b.setAttribute("aria-pressed", String(b.dataset.tool === tool.id));
+  drawingLayer?.set(drawingShapes());
+}
+function placePoint(param) {
+  if (!param.point) return;
+  const logical = charts["market-chart"].timeScale().coordinateToLogical(param.point.x);
+  const price = charts.anchor.coordinateToPrice(param.point.y);
+  if (logical == null || price == null) return;
+  placing.points.push({ logical, price });
+  if (placing.points.length >= placing.tool.points) finishPlacement(); else updatePlacement();
+}
+function finishPlacement() {
+  if (!placing) return;
+  const { tool, points } = placing;
+  try {
+    const drawing = VeyraChartTools.buildDrawing(tool.id, points, { bars: visibleStudyBars, intervalDays: INTERVAL_DAYS[marketInterval],
+      timeLabel: (i) => `${isoDay(new Date(visibleStudyBars[i].time * 1000))} UTC` });
+    drawing.id = ++drawingSeq;
+    cancelPlacement();
+    addDrawing(drawing);
+    say(drawing.label);
+  } catch (error) {
+    placing.points = [];
+    updatePlacement();
+    say(error.message, true);
+  }
+}
+function cancelPlacement() {
+  if (!placing) return;
+  placing = null;
+  $("draw-bar").hidden = true;
+  for (const b of document.querySelectorAll("#draw-tiles .tile")) b.setAttribute("aria-pressed", "false");
+  drawingLayer?.set(drawingShapes());
+}
+// The library delays and merges quick taps (double-tap detection), so drawing reads raw taps:
+// a short press that barely moved places a point; a drag still pans the chart.
+let drawTap = null;
+$("market-chart").addEventListener("pointerdown", (e) => { drawTap = placing ? { x: e.clientX, y: e.clientY } : null; }, true);
+$("market-chart").addEventListener("pointerup", (e) => {
+  const start = drawTap;
+  drawTap = null;
+  if (!placing || !start || Math.hypot(e.clientX - start.x, e.clientY - start.y) > 8) return;
+  const rect = $("market-chart").getBoundingClientRect(), x = e.clientX - rect.left, y = e.clientY - rect.top;
+  if (x > charts["market-chart"].timeScale().width()) return; // the price scale is not part of the plot
+  placePoint({ point: { x, y } });
+}, true);
+$("draw-cancel").addEventListener("click", cancelPlacement);
+$("draw-finish").addEventListener("click", finishPlacement);
+const TOOL_GLYPHS = { trend: "╱", horizontal: "―", long: "⬆", short: "⬇", forecast: "↗", "bars-pattern": "▥", "ghost-feed": "⋰",
+  sector: "◔", avwap: "∿", "fixed-vp": "▤", "anchored-vp": "⫣", "price-range": "↕", "date-range": "↔", "date-price-range": "⤡",
+  rectangle: "▭", triangle: "△", circle: "○" };
+function renderDrawSheet() {
+  const query = $("draw-search").value.trim();
+  $("draw-categories").replaceChildren(...VeyraChartTools.CATEGORIES.map((category) => {
+    const tab = el("button", { type: "button", role: "tab", "aria-selected": String(!query && category.id === drawCategory) }, category.name);
+    tab.addEventListener("click", () => { drawCategory = category.id; $("draw-search").value = ""; renderDrawSheet(); });
+    return tab;
+  }));
+  const tools = VeyraChartTools.searchTools(query, drawCategory);
+  $("draw-tiles").replaceChildren(...tools.map((t) => {
+    const tile = el("button", { type: "button", class: "tile", id: t.id === "trend" ? "chart-trend" : `draw-${t.id}`, "data-tool": t.id,
+      "aria-pressed": String(placing?.tool.id === t.id), title: t.help },
+      el("span", { class: "glyph", "aria-hidden": "true" }, TOOL_GLYPHS[t.id]), t.name);
+    tile.addEventListener("click", () => startPlacement(t.id));
+    return tile;
+  }));
+  if (!tools.length) $("draw-tiles").append(el("p", { class: "sheet-note" }, "No drawing tools match."));
+}
+$("draw-search").addEventListener("input", renderDrawSheet);
+$("open-drawings").addEventListener("click", () => { renderDrawSheet(); openSheet("draw-sheet"); $("draw-search").focus(); });
+
+// ---------------------------------------------------------------- bar replay
+function startReplay() {
+  closeSheets();
+  cancelPlacement();
+  if (!marketBars.length) { say("Load a chart before starting a replay.", true); return; }
+  replay.picking = true;
+  $("replay-bar").hidden = false;
+  $("replay-label").textContent = "Bar replay · tap the bar to start from";
+}
+function startReplayAt(time) {
+  replay.picking = false;
+  replay.time = time;
+  renderMarketChart();
+  updateReplayLabel();
+}
+function stepReplay(delta) {
+  if (replay.time == null) return;
+  const i = Math.max(0, Math.min(replayTimeline.length - 1, replayTimeline.indexOf(replay.time) + delta));
+  replay.time = replayTimeline[i];
+  if (i === replayTimeline.length - 1) setReplayPlaying(false);
+  renderMarketChart();
+  updateReplayLabel();
+}
+function updateReplayLabel() {
+  const i = replayTimeline.indexOf(replay.time);
+  $("replay-label").textContent = `Replay · ${isoDay(new Date(replay.time * 1000))} UTC · bar ${i + 1} of ${replayTimeline.length}${i === replayTimeline.length - 1 ? " · end of data" : ""}`;
+}
+function setReplayPlaying(on) {
+  clearInterval(replay.timer);
+  replay.timer = on ? setInterval(() => stepReplay(1), 600) : null;
+  $("replay-play").setAttribute("aria-pressed", String(on));
+  $("replay-play").setAttribute("aria-label", on ? "Pause" : "Play");
+  $("replay-play").textContent = on ? "⏸" : "▶";
+}
+function exitReplay(render = true) {
+  const active = replay.time != null || replay.picking;
+  setReplayPlaying(false);
+  replay.time = null;
+  replay.picking = false;
+  $("replay-bar").hidden = true;
+  if (active && render && marketBars.length) renderMarketChart();
+}
+$("replay-back").addEventListener("click", () => stepReplay(-1));
+$("replay-step").addEventListener("click", () => stepReplay(1));
+$("replay-play").addEventListener("click", () => { if (replay.time != null) setReplayPlaying(!replay.timer); });
+$("replay-exit").addEventListener("click", () => exitReplay());
+
+// ---------------------------------------------------------------- layouts
+function currentLayout() {
+  return { name: layoutName, dataset: $("market-dataset").value, interval: marketInterval, range: marketRange,
+    chartType: $("chart-type").value, indicators: [...activeIndicators], compare: [...compareIds], settings: { ...chartSettings } };
+}
+function applyLayout(raw, record = true) {
+  const previous = currentLayout(), l = VeyraChartTools.layout(raw, datasetIds());
+  if (record) remember(`Open layout “${l.name}”`, () => applyLayout(previous, false));
+  layoutName = l.name;
+  chartSettings = l.settings;
+  activeIndicators.clear();
+  l.indicators.forEach((id) => activeIndicators.add(id));
+  for (const b of document.querySelectorAll("[data-indicator]")) b.setAttribute("aria-pressed", String(activeIndicators.has(b.dataset.indicator)));
+  $("rsi-pane").hidden = !activeIndicators.has("rsi");
+  $("macd-pane").hidden = !activeIndicators.has("macd");
+  compareIds.splice(0, compareIds.length, ...l.compare.filter((id) => id !== l.dataset));
+  $("chart-type").value = chartTypeShown = l.chartType;
+  marketRange = l.range;
+  marketInterval = l.interval;
+  for (const [selector, value] of [["[data-range]", String(l.range)], ["[data-interval]", l.interval]]) {
+    for (const b of document.querySelectorAll(selector)) {
+      const on = (b.dataset.range ?? b.dataset.interval) === value;
+      b.classList.toggle("on", on); b.setAttribute("aria-pressed", String(on));
+    }
+  }
+  $("open-intervals").firstChild.textContent = `${intervalLabel(l.interval)} `;
+  $("hub-layout-name").textContent = layoutName;
+  updateHubLabels();
+  clearTrends();
+  applyChartSettings();
+  if ($("market-dataset").value !== l.dataset) { $("market-dataset").value = l.dataset; showMarkets(); }
+  else if (marketBars.length) renderMarketChart();
+}
+function saveLayout(name = layoutName) {
+  if (!name || name === "Unnamed") { openPanel("manage"); say("Name this layout to save it."); return; }
+  layoutName = name;
+  const layout = currentLayout(), saved = chartPrefs.layouts.filter((l) => l.name !== name);
+  if (chartStore.write("layouts", [layout, ...saved].slice(0, 50))) say(`Layout “${name}” saved on this device`);
+  $("hub-layout-name").textContent = layoutName;
+  updateHubLabels();
+}
+
+// ---------------------------------------------------------------- analysis hub
+const HUB = [
+  ["Layout", [["panes", "▦", "Layout setup"], ["manage", "✎", "Manage layout"], ["new", "＋", "New layout"], ["save", "⤓", "Save layout"], ["open", "☰", "Open layout"]]],
+  ["Chart", [["indicators", "ƒx", "Indicators"], ["templates", "❏", "Indicator templates"], ["compare", "⇅", "Compare symbols"],
+    ["alerts", "⏰", "Alerts"], ["replay", "⏯", "Bar replay"], ["objects", "☷", "Object tree"], ["settings", "⚙", "Chart settings"]]],
+  ["Symbol", [["details", "ⓘ", "Symbol details"], ["technicals", "◎", "Technicals"],
+    ["financials", "▤", "Financials", "No company financials for crypto"], ["forecast", "↗", "Forecast", "No analyst forecasts in this data"]]],
+  ["Trade & code", [["broker", "⇄", "Trade with a broker"], ["strategy", "⚑", "Strategy on chart"], ["editor", "{ }", "Python editor"], ["watchlist", "★", "Watchlist"]]],
+];
+const hubActions = {
+  new: () => { closeSheets(); applyLayout({ name: "Unnamed", dataset: $("market-dataset").value }); },
+  save: () => { closeSheets(); saveLayout(); },
+  indicators: () => $("chart-indicators").click(),
+  replay: startReplay,
+  editor: () => { closeSheets(); location.hash = "#code"; },
+  watchlist: () => { closeSheets(); selectBrowseTab("watch"); $("browse-assets").click(); },
+};
+$("hub-sections").replaceChildren(...HUB.flatMap(([title, tiles]) => [el("h3", {}, title), el("div", { class: "tile-grid" }, ...tiles.map(([key, glyph, label, why]) => {
+  const tile = el("button", { type: "button", class: "tile", "data-hub": key, ...(key === "strategy" ? { id: "chart-report", "aria-haspopup": "dialog" } : {}) },
+    el("span", { class: "glyph", "aria-hidden": "true" }, glyph), el("span", { class: "tile-label" }, label));
+  if (why) { tile.disabled = true; tile.append(el("span", { class: "why" }, why)); }
+  if (key === "alerts") tile.append(el("span", { class: "dot", hidden: "" }));
+  if (key !== "strategy") tile.addEventListener("click", () => (hubActions[key] || (() => openPanel(key)))());
+  return tile;
+}))]));
+function updateHubLabels() {
+  document.querySelector('[data-hub="manage"] .tile-label').textContent = `Manage “${layoutName}”`;
+}
+updateHubLabels();
+$("open-hub").addEventListener("click", () => { $("hub-layout-name").textContent = layoutName; openSheet("hub-sheet"); });
+$("open-broker").addEventListener("click", () => openPanel("broker", false));
+
+let panelName = null, panelFromHub = true;
+function openPanel(name, fromHub = true) {
+  panelName = name;
+  panelFromHub = fromHub;
+  const body = $("panel-body");
+  body.replaceChildren();
+  $("panel-title").textContent = PANELS[name](body);
+  $("panel-back").hidden = !fromHub;
+  openSheet("panel-sheet");
+}
+$("panel-back").addEventListener("click", () => openSheet("hub-sheet"));
+const note = (text) => el("p", { class: "sheet-note" }, text);
+const action = (label, fn, attrs = {}) => { const b = el("button", { type: "button", ...attrs }, label); b.addEventListener("click", fn); return b; };
+const rowItem = (title, sub, ...controls) => el("li", {}, el("div", { class: "grow" }, el("strong", {}, title), sub ? el("span", { class: "sub" }, sub) : ""), ...controls);
+const toggleRow = (title, sub, on, fn) => rowItem(title, sub, action(on ? "On" : "Off", fn, { "aria-pressed": String(on) }));
+const PANELS = {
+  panes(body) {
+    body.append(note("Phones show one chart with stacked panes. Multi-chart grids are not available yet."),
+      el("ul", { class: "sheet-list" }, ...[["volume", "Volume in the price pane"], ["rsi", "RSI pane"], ["macd", "MACD pane"]].map(([id, label]) =>
+        toggleRow(label, indicatorName(id), activeIndicators.has(id), () => { setIndicator(id, !activeIndicators.has(id)); openPanel("panes"); }))));
+    return "Layout setup";
+  },
+  manage(body) {
+    const input = el("input", { id: "layout-name", maxlength: "60", value: layoutName === "Unnamed" ? "" : layoutName, placeholder: "Layout name", autocomplete: "off" });
+    const saved = chartPrefs.layouts.some((l) => l.name === layoutName);
+    body.append(el("label", { for: "layout-name" }, "Name"), el("div", { class: "sheet-row" }, input,
+      action("Save", () => { const v = input.value.trim(); if (!v) { say("Enter a layout name.", true); return; } saveLayout(v); openPanel("manage"); }, { class: "primary" })),
+      note(`Saves the symbol, timeframe, range, chart type, indicators, compared symbols and settings on this device. Drawings are temporary and not saved.${saved ? " A saved copy exists." : ""}`));
+    if (saved) body.append(action("Delete saved copy", () => {
+      chartStore.write("layouts", chartPrefs.layouts.filter((l) => l.name !== layoutName)); say("Saved layout deleted"); openPanel("manage");
+    }));
+    return `Manage “${layoutName}”`;
+  },
+  open(body) {
+    const layouts = chartPrefs.layouts;
+    body.append(el("ul", { class: "sheet-list" }, ...layouts.map((l) => {
+      const ds = state.datasets.find((d) => d.dataset_id === l.dataset);
+      return rowItem(l.name, `${ds ? assetName(ds) : "Unavailable asset"} · ${intervalLabel(l.interval)} · ${l.indicators.length} indicators`,
+        action("Open", () => { applyLayout(l); closeSheets(); }),
+        action("Delete", () => { chartStore.write("layouts", layouts.filter((x) => x !== l)); openPanel("open"); }, { "aria-label": `Delete ${l.name}` }));
+    })));
+    if (!layouts.length) body.append(note("No saved layouts on this device yet. Use Save layout."));
+    return "Open layout";
+  },
+  settings(body) {
+    const s = chartSettings;
+    body.append(el("ul", { class: "sheet-list" },
+      toggleRow("Grid lines", "", s.grid, () => setSetting("grid", !s.grid)),
+      toggleRow("Current price line", "Horizontal line at the latest close", s.priceLine, () => setSetting("priceLine", !s.priceLine)),
+      toggleRow("Symbol on price scale", "Shows the symbol beside the price label", s.symbolLabel, () => setSetting("symbolLabel", !s.symbolLabel)),
+      toggleRow("Crosshair", "Shows OHLC values under your finger", s.crosshair, () => setSetting("crosshair", !s.crosshair)),
+      toggleRow("Log scale", "", s.log, () => setSetting("log", !s.log)),
+      rowItem("Candle colors", s.colors === "classic" ? "Green up, red down" : "Ink up, orange down",
+        action("Classic", () => setSetting("colors", "classic"), { "aria-pressed": String(s.colors === "classic") }),
+        action("Mono", () => setSetting("colors", "mono"), { "aria-pressed": String(s.colors === "mono") }))),
+      note("Times are shown in UTC. Settings are saved with a layout."));
+    return "Chart settings";
+  },
+  templates(body) {
+    const input = el("input", { id: "template-name", maxlength: "60", placeholder: "Template name", autocomplete: "off" });
+    const templates = chartPrefs.templates;
+    body.append(el("label", { for: "template-name" }, "Save current indicators as a template"), el("div", { class: "sheet-row" }, input,
+      action("Save", () => {
+        const name = input.value.trim();
+        if (!name) { say("Enter a template name.", true); return; }
+        if (chartStore.write("templates", [{ name, indicators: [...activeIndicators] }, ...templates.filter((t) => t.name !== name)].slice(0, 50))) say(`Template “${name}” saved`);
+        openPanel("templates");
+      }, { class: "primary" })),
+      el("ul", { class: "sheet-list" }, ...templates.map((t) => rowItem(t.name, t.indicators.map(indicatorName).join(", ") || "No indicators",
+        action("Apply", () => applyTemplate(t)),
+        action("Delete", () => { chartStore.write("templates", templates.filter((x) => x !== t)); openPanel("templates"); }, { "aria-label": `Delete ${t.name}` })))));
+    if (!templates.length) body.append(note("No templates yet."));
+    return "Indicator templates";
+  },
+  compare(body) {
+    const current = $("market-dataset").value;
+    body.append(note("Compared symbols are rebased onto this chart’s first visible close, so both read on one price scale. Up to 3."),
+      el("ul", { class: "sheet-list" }, ...state.datasets.filter((d) => d.dataset_id !== current).map((d) => {
+        const on = compareIds.includes(d.dataset_id);
+        return rowItem(assetName(d), d.provider, action(on ? "Remove" : "Add", () => setCompare(d.dataset_id, !on), { "aria-pressed": String(on) }));
+      })));
+    if (state.datasets.length < 2) body.append(note("Only one asset is available."));
+    return "Compare symbols";
+  },
+  alerts(body) {
+    setUnseenAlerts(false);
+    const ds = currentDataset(), last = marketBars.at(-1);
+    const input = el("input", { id: "alert-level", inputmode: "decimal", value: last ? String(Number(last.close)) : "", autocomplete: "off" });
+    body.append(el("label", { for: "alert-level" }, `Alert when ${ds ? assetName(ds) : "price"} crosses`), el("div", { class: "sheet-row" }, input,
+      action("Add alert", () => addAlert(Number(input.value)), { class: "primary" })),
+      note("Alerts check this historical data and mark past crossings on the chart. Live notifications need a live data feed, which Veyra does not have yet."));
+    const alerts = chartPrefs.alerts;
+    body.append(el("ul", { class: "sheet-list" }, ...alerts.map((a) => {
+      const asset = state.datasets.find((d) => d.dataset_id === a.dataset);
+      const hits = a.dataset === ds?.dataset_id ? VeyraChartTools.crossings(visibleStudyBars, a.level).length : null;
+      return rowItem(`${assetName(asset)} crosses ${marketNumber(a.level)}`, hits == null ? "Open this asset to check crossings" : `${hits} crossing${hits === 1 ? "" : "s"} in the visible range`,
+        action("Remove", () => removeAlert(a), { "aria-label": `Remove alert at ${a.level}` }));
+    })));
+    if (!alerts.length) body.append(note("No alerts yet."));
+    return "Alerts";
+  },
+  objects(body) {
+    const list = el("ul", { class: "sheet-list" });
+    for (const d of drawings) list.append(rowItem(d.name, d.label, action(d.hidden ? "Show" : "Hide", () => { d.hidden = !d.hidden; drawingLayer?.set(drawingShapes()); d.line?.applyOptions({ visible: !d.hidden }); openPanel("objects"); }),
+      action("Remove", () => { removeDrawing(d); openPanel("objects"); }, { "aria-label": `Remove ${d.name}` })));
+    for (const id of activeIndicators) list.append(rowItem(indicatorName(id), "Indicator", action("Remove", () => { setIndicator(id, false); openPanel("objects"); })));
+    for (const id of compareIds) list.append(rowItem(assetName(state.datasets.find((d) => d.dataset_id === id)), "Compared symbol", action("Remove", () => { setCompare(id, false); openPanel("objects"); })));
+    for (const a of chartPrefs.alerts.filter((x) => x.dataset === $("market-dataset").value)) list.append(rowItem(`Alert at ${marketNumber(a.level)}`, "Alert", action("Remove", () => { removeAlert(a); openPanel("objects"); })));
+    if (selectedOverlay) list.append(rowItem("Strategy fills", `Run ${selectedOverlay.run_id}`, action("Clear", () => { $("clear-overlay").click(); openPanel("objects"); })));
+    body.append(list);
+    if (!list.children.length) body.append(note("Nothing on the chart yet."));
+    if (drawings.length) body.append(action("Remove all drawings", () => {
+      const removed = [...drawings];
+      clearTrends();
+      remember("Remove all drawings", () => removed.forEach(addDrawing), "drawing");
+      openPanel("objects");
+    }, { id: "chart-clear" }));
+    return "Object tree";
+  },
+  details(body) {
+    const d = currentDataset();
+    if (!d) { body.append(note("No asset selected.")); return "Symbol details"; }
+    body.append(el("dl", { class: "details" }, ...[["Symbol", assetName(d)], ["Instrument", d.instrument_id], ["Quote currency", d.quote_currency],
+      ["Source", d.provider], ["Resolution", d.resolution], ["Price basis", d.price_basis], ["Coverage", `${d.coverage_start.slice(0, 10)} – ${d.coverage_end.slice(0, 10)} UTC`],
+      ["Bars", String(d.bars)], ["Quality findings", String(d.quality_findings)], ["Allowed uses", (d.allowed_uses || []).join(", ")],
+      ["License", d.license], ["Data fingerprint", d.manifest_hash]].flatMap(([k, v]) => [el("dt", { class: "sub" }, k), el("dd", {}, v)])));
+    return "Symbol details";
+  },
+  technicals(body) {
+    const rows = VeyraChartTools.technicals(studyBars, studyBars.map((b) => rsiByTime.get(b.time) ?? null));
+    const last = studyBars.at(-1);
+    body.append(note(`Readings at ${intervalLabel(marketInterval)} candles${last ? ` as of ${isoDay(new Date(last.time * 1000))} UTC` : ""}. Facts about the data, not a rating or advice.`),
+      el("table", { class: "readings" }, el("thead", {}, el("tr", {}, el("th", {}, "Measure"), el("th", {}, "Value"), el("th", {}, "Reading"))),
+        el("tbody", {}, ...rows.map((r) => el("tr", {}, el("td", {}, r.name), el("td", {}, r.value), el("td", {}, r.reading))))));
+    if (!rows.length) body.append(note("Load a chart first."));
+    return "Technicals";
+  },
+  broker(body) {
+    body.append(note("Veyra does not place orders yet. Connected brokers and exchanges arrive after hosted paper trading, with withdrawal-free keys, explicit approval for every live deployment, and your funds kept at your own broker."),
+      el("ul", { class: "sheet-list" }, rowItem("Connected brokers", "None available yet")),
+      action("Test a strategy instead", () => { closeSheets(); location.hash = "#code"; }, { class: "primary" }));
+    return "Trade with a broker";
+  },
+};
+function applyTemplate(t) {
+  const previous = [...activeIndicators];
+  for (const i of VeyraChartTools.INDICATORS) setIndicator(i.id, t.indicators.includes(i.id), false);
+  remember(`Apply template “${t.name}”`, () => { for (const i of VeyraChartTools.INDICATORS) setIndicator(i.id, previous.includes(i.id), false); });
+  say(`Template “${t.name}” applied`);
+}
+function setCompare(id, on, record = true) {
+  if (compareIds.includes(id) === on) return;
+  if (on && compareIds.length >= 3) { say("Compare up to 3 symbols.", true); return; }
+  if (on) compareIds.push(id); else compareIds.splice(compareIds.indexOf(id), 1);
+  if (record) remember(`${on ? "Compare" : "Stop comparing"} ${assetName(state.datasets.find((d) => d.dataset_id === id))}`, () => setCompare(id, !on, false));
+  if (marketBars.length) renderMarketChart();
+  if ($("panel-sheet").open && panelName === "compare") openPanel("compare", panelFromHub);
+}
+function addAlert(level) {
+  const ds = currentDataset();
+  if (!ds || !Number.isFinite(level) || level <= 0) { say("Enter a price above zero.", true); return; }
+  const alert = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, dataset: ds.dataset_id, level };
+  if (!chartStore.write("alerts", [...chartPrefs.alerts, alert].slice(-50))) return;
+  remember(`Add alert at ${marketNumber(level)}`, () => removeAlert(alert, false));
+  if (marketBars.length) renderMarketChart();
+  if (VeyraChartTools.crossings(visibleStudyBars, level).length && !$("panel-sheet").open) setUnseenAlerts(true);
+  if ($("panel-sheet").open && panelName === "alerts") openPanel("alerts", panelFromHub);
+}
+function removeAlert(alert, record = true) {
+  chartStore.write("alerts", chartPrefs.alerts.filter((a) => a.id !== alert.id));
+  if (record) remember(`Remove alert at ${marketNumber(alert.level)}`, () => {
+    chartStore.write("alerts", [...chartPrefs.alerts, alert]);
+    if (marketBars.length) renderMarketChart();
+  });
+  if (marketBars.length) renderMarketChart();
+  if ($("panel-sheet").open && panelName === "alerts") openPanel("alerts", panelFromHub);
+}
+
+// ---------------------------------------------------------------- symbols and watchlist
+function selectBrowseTab(tab) {
+  $("browse-tab-all").setAttribute("aria-selected", String(tab === "all"));
+  $("browse-tab-watch").setAttribute("aria-selected", String(tab === "watch"));
+  if ($("asset-browser").open) renderAssetBrowser();
+}
+$("browse-tab-all").addEventListener("click", () => selectBrowseTab("all"));
+$("browse-tab-watch").addEventListener("click", () => selectBrowseTab("watch"));
+function toggleWatch(id) {
+  const list = chartPrefs.watchlist;
+  chartStore.write("watchlist", list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
+  renderAssetBrowser();
+}
+
+// ---------------------------------------------------------------- indicators, metrics and strategies browser
+let indicatorPage = "home", favoritesFilter = "all", communityRequest = 0, myScripts = null;
+const INDICATOR_PAGES = { home: "Indicators, metrics & strategies", favorites: "Favorites", mine: "My scripts",
+  picks: "Editors’ picks", top: "Top community scripts", trending: "Trending community scripts" };
+const isFavorite = (kind, source, id) => chartPrefs.favorites.some((f) => f.kind === kind && f.source === source && f.id === id);
+function toggleFavorite(item) {
+  const list = chartPrefs.favorites, on = list.some((f) => f.kind === item.kind && f.source === item.source && f.id === item.id);
+  chartStore.write("favorites", on ? list.filter((f) => !(f.kind === item.kind && f.source === item.source && f.id === item.id)) : [...list, item]);
+  renderIndicatorBody();
+}
+const starButton = (item) => action("★", () => toggleFavorite(item), { class: "star", "aria-pressed": String(isFavorite(item.kind, item.source, item.id)), "aria-label": `Favorite ${item.name}` });
+const typeIcon = (kind) => el("span", { class: "type-icon", "aria-hidden": "true", title: kind }, kind === "indicator" ? "ƒ" : "S");
+function indicatorRow(i) {
+  const on = activeIndicators.has(i.id);
+  const toggle = el("button", { type: "button", class: "toggle", "data-indicator": i.id, "aria-pressed": String(on), ...(indicatorButtonId[i.id] ? { id: indicatorButtonId[i.id] } : { id: `chart-ind-${i.id}` }) },
+    el("strong", {}, i.name), el("span", { class: "sub" }, `${i.about} · Veyra built-in`));
+  toggle.addEventListener("click", () => setIndicator(i.id, !activeIndicators.has(i.id)));
+  return el("li", {}, typeIcon("indicator"), toggle, starButton({ kind: "indicator", source: "builtin", id: i.id, name: i.name }));
+}
+function strategyRow(s) {
+  const href = s.source === "community" ? `#public/${encodeURIComponent(s.id)}` : `#project/${encodeURIComponent(s.id)}`;
+  const author = s.source === "community" ? "Published strategy · publisher not shown" : `You · ${s.store} strategy`;
+  return el("li", {}, typeIcon("strategy"), el("div", { class: "grow" }, el("strong", {}, s.name), el("a", { class: "sub", href }, author)),
+    el("a", { class: "doc", href, "aria-label": `Open ${s.name}` }, "▤"), starButton({ kind: "strategy", source: s.source, id: s.id, name: s.name }));
+}
+async function loadMyScripts() {
+  if (myScripts) return myScripts;
+  const rows = [];
+  try { rows.push(...localWorkspace.listProjects().projects.map((p) => ({ id: p.id, name: p.name, source: "mine", store: "device" }))); } catch { /* storage blocked */ }
+  if (state.org) {
+    try {
+      // shortcut: first page (100) of cloud strategies; page further when libraries grow past it.
+      const result = await api(`/v1/orgs/${state.org}/projects`);
+      rows.push(...(result.projects || []).map((p) => ({ id: p.id, name: p.name, source: "mine", store: "cloud" })));
+    } catch { /* offline or signed out: device strategies still list */ }
+  }
+  return (myScripts = rows);
+}
+async function loadCommunity(query = "") {
+  const request = ++communityRequest;
+  const result = await api(`/v1/public/strategies?${new URLSearchParams({ limit: "20", q: query })}`, { anonymous: true });
+  if (request !== communityRequest) return null;
+  return (result.strategies || []).map((s) => ({ id: s.id, name: s.title, source: "community" }));
+}
+function showIndicators(page) {
+  indicatorPage = page;
+  $("indicator-back").hidden = page === "home";
+  $("indicator-title").textContent = INDICATOR_PAGES[page];
+  $("indicator-search").value = "";
+  $("indicator-search").placeholder = page === "favorites" ? "Search favorites…" : page === "home" ? "Search indicators, metrics, strategies…" : "Search…";
+  if (page === "mine") myScripts = null;
+  if (page === "favorites") favoritesFilter = "all";
+  renderIndicatorBody();
+}
+$("indicator-back").addEventListener("click", () => showIndicators("home"));
+$("indicator-search").addEventListener("input", () => renderIndicatorBody());
+const navRow = (label, sub, page) => el("li", {}, action(el("span", {}, el("strong", {}, label), el("span", { class: "sub" }, sub)), () => showIndicators(page), { class: "toggle" }), el("span", { "aria-hidden": "true" }, "›"));
+async function renderIndicatorBody() {
+  const body = $("indicator-body"), query = $("indicator-search").value.trim().toLowerCase(), page = indicatorPage;
+  const matches = (name) => !query || name.toLowerCase().includes(query);
+  const builtins = VeyraChartTools.INDICATORS.filter((i) => matches(`${i.name} ${i.about}`));
+  if (page === "home") {
+    body.replaceChildren(
+      ...(query ? [] : [el("ul", { class: "sheet-list" }, navRow("★ Favorites", `${chartPrefs.favorites.length} saved`, "favorites"), navRow("My scripts", "Your private strategies", "mine"))]),
+      el("h3", {}, "Technicals · built-in"), el("ul", { class: "sheet-list" }, ...builtins.map(indicatorRow)),
+      el("h3", {}, "Fundamentals · built-in"), note("Not available: crypto assets have no company fundamentals, and this data source provides none."),
+      el("h3", {}, "Community scripts"),
+      ...(query ? [el("ul", { class: "sheet-list", id: "community-results" }, el("li", { class: "sheet-note" }, "Searching…"))]
+        : [el("ul", { class: "sheet-list" }, navRow("Editors’ picks", "Selected by Veyra", "picks"), navRow("Top", "Most used", "top"), navRow("Trending", "Recently published", "trending"))]));
+    if (!builtins.length && query) body.querySelector(".sheet-list")?.append(el("li", { class: "sheet-note" }, "No built-in matches."));
+    if (query) {
+      const [mine, community] = await Promise.all([loadMyScripts(), loadCommunity(query).catch(() => [])]);
+      if (community === null || $("indicator-search").value.trim().toLowerCase() !== query || indicatorPage !== page) return;
+      const list = $("community-results");
+      const found = [...mine.filter((s) => matches(s.name)), ...community];
+      list?.replaceChildren(...found.map(strategyRow));
+      if (list && !found.length) list.append(el("li", { class: "sheet-note" }, "No strategies match."));
+    }
+  } else if (page === "favorites") {
+    const chips = el("div", { class: "sheet-tabs", role: "group", "aria-label": "Filter favorites" }, ...[["all", "All"], ["indicator", "Indicators"], ["strategy", "Strategies"]].map(([k, label]) =>
+      action(label, () => { favoritesFilter = k; renderIndicatorBody(); }, { "aria-pressed": String(favoritesFilter === k) })));
+    const favorites = chartPrefs.favorites.filter((f) => (favoritesFilter === "all" || f.kind === favoritesFilter) && matches(f.name));
+    body.replaceChildren(chips, el("ul", { class: "sheet-list" }, ...favorites.map((f) => {
+      if (f.kind === "indicator") {
+        const i = VeyraChartTools.INDICATORS.find((x) => x.id === f.id);
+        return el("li", {}, starButton(f), typeIcon("indicator"), el("div", { class: "grow" }, el("strong", {}, i.name), el("span", { class: "sub" }, "Veyra built-in")),
+          action(activeIndicators.has(f.id) ? "On chart" : "Add", () => { setIndicator(f.id, !activeIndicators.has(f.id)); renderIndicatorBody(); }, { "aria-pressed": String(activeIndicators.has(f.id)) }));
+      }
+      const row = strategyRow({ ...f, store: "saved" });
+      row.prepend(starButton(f));
+      row.querySelector(".star:last-child")?.remove();
+      if (f.source === "mine") row.append(action("🗑", () => toggleFavorite(f), { "aria-label": `Remove ${f.name} from favorites` }));
+      return row;
+    })));
+    if (!favorites.length) body.append(note(chartPrefs.favorites.length ? "No favorites match." : "Star indicators and strategies to collect them here."));
+  } else if (page === "mine") {
+    body.replaceChildren(note("Loading your strategies…"));
+    const mine = await loadMyScripts();
+    if (indicatorPage !== "mine") return;
+    body.replaceChildren(note("Strategies are Python projects. Open one to edit or backtest it; show a backtest’s fills with Strategy on chart."),
+      el("ul", { class: "sheet-list" }, ...mine.filter((s) => matches(s.name)).map(strategyRow)));
+    if (!mine.length) body.append(note("No strategies yet."), el("a", { class: "button", href: "#code" }, "Create a strategy"));
+  } else if (page === "picks" || page === "top") {
+    body.replaceChildren(note(page === "picks" ? "No editors’ picks yet. Veyra has not started an editorial program." : "Not ranked yet. Rankings need usage data that Veyra does not collect yet."),
+      action("See trending", () => showIndicators("trending")));
+  } else {
+    body.replaceChildren(note("Loading published strategies…"));
+    try {
+      const community = await loadCommunity(query);
+      if (community === null || indicatorPage !== page) return;
+      body.replaceChildren(note("Newest published strategies first. Trending by use needs usage data that Veyra does not collect yet."),
+        el("ul", { class: "sheet-list" }, ...community.map(strategyRow)));
+      if (!community.length) body.append(note("No published strategies yet."));
+    } catch (e) { if (indicatorPage === page) body.replaceChildren(note(`Community scripts unavailable. ${e.message}`)); }
+  }
+}
+
+renderIndicatorBody(); // stable toggle ids exist before the sheet first opens
 
 // ---------------------------------------------------------------- projects & editor
 const localWorkspace = VeyraWorkspaceStore.create(browserStorage);
@@ -2449,6 +3316,11 @@ function syncRsiRange(range) {
 }
 
 function updateChartResearch(aggregated, visible) {
+  replayTimeline = visible.map((bar) => bar.time);
+  if (replay.time != null) {
+    aggregated = aggregated.filter((bar) => bar.time <= replay.time);
+    visible = visible.filter((bar) => bar.time <= replay.time);
+  }
   studyBars = aggregated;
   visibleStudyBars = visible;
   const values = VeyraChartResearch.rsi(aggregated.map((bar) => bar.close));
@@ -2462,15 +3334,17 @@ function updateChartResearch(aggregated, visible) {
       ? { time: bar.time } : { time: bar.time, value: rsiByTime.get(bar.time) }));
     syncRsiRange(charts["market-chart"].timeScale().getVisibleLogicalRange());
   }
+  updateChartWorkspace(aggregated, visible);
   updateOverlay();
 }
 
 function updateOverlay() {
   const dataset = state.datasets.find((d) => d.dataset_id === $("market-dataset").value);
-  for (const key of ["candles", "marketLine"]) charts[key]?.setMarkers([]);
+  for (const key of ["candles", "marketLine", "marketBarsSeries", "marketArea"]) charts[key]?.setMarkers([]);
   overlayGroups = [];
   $("overlay-readout").hidden = !selectedOverlay;
   $("overlay-details").hidden = !selectedOverlay;
+  activeSeries()?.setMarkers(alertMarkers());
   if (!selectedOverlay) return;
   $("overlay-evidence").textContent = selectedOverlay.note;
   $("overlay-source").textContent = `v${selectedOverlay.version_no} · Run ${selectedOverlay.run_id}${selectedRunDate ? ` · Created ${selectedRunDate}` : ""} · ${selectedOverlay.provider} · ${selectedOverlay.dataset_id} · ${selectedOverlay.range.start} to ${selectedOverlay.range.end} UTC (end exclusive)`;
@@ -2482,8 +3356,7 @@ function updateOverlay() {
     const overlay = VeyraChartResearch.buildOverlay(selectedOverlay, { dataset, candles: visibleStudyBars, interval: marketInterval });
     const colors = chartColors();
     const markers = overlay.markers.map((marker) => ({ ...marker, color: marker.position === "belowBar" ? colors.ink : colors.accent }));
-    const active = $("chart-type").value === "line" ? charts.marketLine : charts.candles;
-    active.setMarkers(markers);
+    activeSeries().setMarkers([...markers, ...alertMarkers()].sort((a, b) => a.time - b.time));
     overlayGroups = overlay.groups;
     $("overlay-summary").textContent = `${selectedOverlay.complete ? "Backtest" : "Incomplete backtest"} · ${overlay.summary.displayedFills}/${overlay.summary.totalFills} fills shown · imported claims unverified`;
     $("report-import-status").textContent = `Run ${selectedOverlay.run_id.slice(0, 12)} · source data hashes match · ${selectedOverlay.fills.length} recorded fills`;
@@ -2643,23 +3516,15 @@ function closeResearchDialog(id) {
   $(id).close();
 }
 for (const [trigger, dialog, close] of [["chart-indicators", "indicator-dialog", "close-indicators"], ["chart-report", "report-overlay-dialog", "close-report-overlay"]]) {
-  $(trigger).addEventListener("click", () => { openResearchDialog(dialog); if (dialog === "report-overlay-dialog") showOverlayFills(); });
+  $(trigger).addEventListener("click", () => { closeSheets(); openResearchDialog(dialog); if (dialog === "report-overlay-dialog") showOverlayFills(); else showIndicators("home"); });
   $(close).addEventListener("click", () => closeResearchDialog(dialog));
   $(dialog).addEventListener("cancel", () => { if (dialog === "report-overlay-dialog") { cancelReportImport(); closeChartRuns(); } });
   $(dialog).addEventListener("close", () => {
     if ($(dialog).open) return;
     if (dialog === "report-overlay-dialog") { cancelReportImport(); closeChartRuns(); }
-    if (!$("view-markets").hidden) $(trigger).focus();
+    if (!$("view-markets").hidden) ($(trigger).isConnected && $(trigger).offsetParent ? $(trigger) : $("open-hub")).focus();
   });
 }
-$("chart-rsi").addEventListener("click", () => {
-  const on = $("chart-rsi").getAttribute("aria-pressed") !== "true";
-  $("chart-rsi").setAttribute("aria-pressed", String(on));
-  $("rsi-pane").hidden = !on;
-  if (!charts["market-chart"]) return;
-  charts["market-chart"].applyOptions({ timeScale: { visible: !on } });
-  if (on) updateChartResearch(studyBars, visibleStudyBars);
-});
 $("report-file").addEventListener("change", async () => {
   const file = $("report-file").files?.[0];
   if (!file) return;

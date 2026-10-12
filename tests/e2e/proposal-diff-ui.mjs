@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 const { JSDOM, VirtualConsole } = createRequire(import.meta.url)("jsdom");
 const html = readFileSync(new URL("../../apps/web/index.html", import.meta.url), "utf8");
-const scripts = ["chart-research.js", "workspace-store.js", "studio-assistant.js", "report-evidence.js", "saved-links.js", "proposal-diff.js", "strategy-backup.js", "app.js"]
+const scripts = ["chart-research.js", "chart-tools.js", "workspace-store.js", "studio-assistant.js", "report-evidence.js", "saved-links.js", "proposal-diff.js", "strategy-backup.js", "app.js"]
   .map((name) => readFileSync(new URL(`../../apps/web/${name}`, import.meta.url), "utf8"));
 async function until(condition, label) {
   for (let i = 0; i < 200; i++) { if (condition()) return; await delay(5); }

@@ -10,7 +10,7 @@ import { test } from "node:test";
 const require = createRequire(import.meta.url);
 const { JSDOM, VirtualConsole } = require("jsdom");
 const html = readFileSync(new URL("../../apps/web/index.html", import.meta.url), "utf8");
-const scripts = ["chart-research.js", "workspace-store.js", "studio-assistant.js", "report-evidence.js", "proposal-diff.js", "strategy-backup.js", "saved-links.js", "app.js"]
+const scripts = ["chart-research.js", "chart-tools.js", "workspace-store.js", "studio-assistant.js", "report-evidence.js", "proposal-diff.js", "strategy-backup.js", "saved-links.js", "app.js"]
   .map((name) => readFileSync(new URL(`../../apps/web/${name}`, import.meta.url), "utf8"));
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const fixture = (overrides = {}) => ({ format: "veyra-strategy-snapshot", schema_version: 1,

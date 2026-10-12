@@ -12,7 +12,7 @@ import research from "../../apps/web/chart-research.js";
 const require = createRequire(import.meta.url);
 const { JSDOM, VirtualConsole } = require("jsdom");
 const html = readFileSync(new URL("../../apps/web/index.html", import.meta.url), "utf8");
-const scripts = ["chart-research.js", "workspace-store.js", "studio-assistant.js", "saved-links.js", "proposal-diff.js", "strategy-backup.js", "report-evidence.js", "app.js"].map((name) =>
+const scripts = ["chart-research.js", "chart-tools.js", "workspace-store.js", "studio-assistant.js", "saved-links.js", "proposal-diff.js", "strategy-backup.js", "report-evidence.js", "app.js"].map((name) =>
   readFileSync(new URL(`../../apps/web/${name}`, import.meta.url), "utf8"));
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const H = `sha256:${"a".repeat(64)}`;
@@ -79,6 +79,7 @@ function chartHarness() {
       }, timeScale: () => timeScale };
     const timeScale = { range: null, sets: [], fitCalls: 0,
       getVisibleLogicalRange() { return this.range; },
+      width: () => 600, coordinateToLogical: (x) => x, logicalToCoordinate: (logical) => logical, applyOptions() {},
       subscribeVisibleLogicalRangeChange(fn) { rangeListeners.push(fn); },
       emit(range) { this.range = range; rangeListeners.forEach((fn) => fn(range)); },
       setVisibleLogicalRange(range) {
@@ -93,12 +94,15 @@ function chartHarness() {
         setData(value) { this.values = plain(value); }, data() { return this.values; },
         setMarkers(value) { this.markers = plain(value); this.markerCalls.push(plain(value)); },
         applyOptions(value) { Object.assign(this.options, value); },
-        createPriceLine(value) { this.priceLines.push(value); }, coordinateToPrice(value) { return value; } };
+        createPriceLine(value) { this.priceLines.push(value); return value; }, removePriceLine(line) { this.priceLines.splice(this.priceLines.indexOf(line), 1); },
+        attachPrimitive(value) { this.primitive = value; }, coordinateToPrice(value) { return value; } };
       chart.series.push(series); return series;
     };
     chart.addCandlestickSeries = addSeries("candles");
     chart.addLineSeries = addSeries("line");
     chart.addHistogramSeries = addSeries("histogram");
+    chart.addBarSeries = addSeries("bars");
+    chart.addAreaSeries = addSeries("area");
     charts.set(element.id, chart); return chart;
   }
   return { charts, createChart };
@@ -117,7 +121,7 @@ function realChartHarness(w) {
     { get: (target, key) => key in target ? target[key] : () => {} });
   };
   for (const [name, value] of Object.entries({ fg: "#141414", muted: "#66665f", line: "#d3d3ce",
-    panel: "#f7f7f5", accent: "#ff5a1f", mono: "monospace" })) {
+    panel: "#f7f7f5", accent: "#ff5a1f", mono: "monospace", up: "#16a34a", down: "#dc2626" })) {
     w.document.documentElement.style.setProperty(`--${name}`, value);
   }
   w.eval(readFileSync(new URL("../../apps/web/vendor/lightweight-charts.standalone.production.js", import.meta.url), "utf8"));
@@ -126,7 +130,7 @@ function realChartHarness(w) {
     createChart(element, options) {
       const chart = vendor.createChart(element, { ...options, autoSize: false, width: 600, height: 300 });
       chart.series = [];
-      for (const method of ["addCandlestickSeries", "addLineSeries", "addHistogramSeries"]) {
+      for (const method of ["addCandlestickSeries", "addLineSeries", "addHistogramSeries", "addBarSeries", "addAreaSeries"]) {
         const add = chart[method].bind(chart);
         chart[method] = (opts) => { const series = add(opts); chart.series.push(series); return series; };
       }
@@ -238,7 +242,7 @@ test("Indicators dialog controls volume/SMA/RSI and closes explicitly or when le
   ui.$("chart-indicators").click();
   assert.equal(ui.$("indicator-dialog").open, true);
   for (const id of ["chart-volume", "chart-sma", "chart-rsi"]) assert.ok(ui.$("indicator-dialog").contains(ui.$(id)));
-  const [,, volume, sma] = ui.market().series;
+  const series = ui.market().series, volume = series.find((s) => s.options.priceScaleId === "volume"), sma = series[series.indexOf(volume) + 1];
   ui.$("chart-volume").click(); assert.equal(volume.options.visible, false);
   assert.equal(ui.$("chart-volume").getAttribute("aria-pressed"), "false");
   assert.equal(ui.market().priceScale("right").calls.at(-1).scaleMargins.bottom, 0.1);
@@ -444,7 +448,9 @@ test("Line/candle switches move existing markers, and selecting a marked candle 
   assert.equal(ui.$("report-overlay-dialog").open, false, "Unmarked candles do not fabricate fill details");
   ui.change("chart-type", "candles");
   assert.deepEqual(ui.candles().markers, markers); assert.deepEqual(ui.line().markers, []);
+  ui.$("open-drawings").click();
   ui.$("chart-trend").click();
+  assert.equal(ui.$("draw-sheet").open, false, "Choosing a tool returns to the chart for placement");
   ui.market().click({ time: markers[0].time, point: { x: 1, y: 100 } });
   assert.equal(ui.$("report-overlay-dialog").open, false, "Trend drawing does not unexpectedly open fill details");
 });

@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="app.css?v=saved-chart-runs-1">
   <script src="vendor/lightweight-charts.standalone.production.js" defer></script>
   <script src="chart-research.js?v=saved-chart-runs-1" defer></script>
+  <script src="chart-tools.js?v=chart-hub-1" defer></script>
   <script src="workspace-store.js?v=storage-access-1" defer></script>
   <script src="studio-assistant.js?v=templates-2" defer></script>
   <script src="proposal-diff.js" defer></script>
@@ -16,7 +17,7 @@
   <script src="report-evidence.js?v=equity-values-1" defer></script>
   <script src="saved-links.js?v=storage-access-1" defer></script>
   <script src="backtest-params.js" defer></script>
-  <script src="app.js?v=saved-chart-runs-1" defer></script>
+  <script src="app.js?v=chart-hub-1" defer></script>
 </head>
 <body>
   <header class="top">
@@ -30,60 +31,40 @@
   <main>
     <section id="view-markets" class="view">
       <h1 class="sr-only">Markets</h1>
-      <div class="market-search-row">
-        <label for="asset-search" class="sr-only">Search assets</label>
-        <input id="asset-search" type="search" placeholder="Search assets…" autocomplete="off"
-          aria-controls="asset-results" aria-expanded="false">
-        <button id="browse-assets" type="button" aria-label="Browse assets" aria-haspopup="dialog">☰</button>
-        <div id="asset-results" class="asset-results" hidden></div>
-      </div>
       <select id="market-dataset" aria-label="Selected dataset" hidden></select>
-      <div class="market-heading">
-        <div><strong id="market-symbol">Select an asset</strong><span id="market-source" class="sub">Historical · synthetic data</span></div>
-        <div class="market-quote"><strong id="market-price">—</strong><span id="market-change" class="sub"></span></div>
+      <div class="chart-head">
+        <button id="browse-assets" class="symbol-button" type="button" aria-haspopup="dialog" aria-label="Change symbol">
+          <span id="market-icon" class="asset-icon" aria-hidden="true">·</span>
+          <span class="symbol-text"><strong id="market-symbol">Select an asset</strong><span id="market-source" class="sub">Historical · synthetic data</span></span>
+          <span class="caret" aria-hidden="true">▾</span>
+        </button>
+        <div class="market-quote" aria-live="polite"><strong id="market-price">—</strong><span id="market-change" class="sub"></span></div>
       </div>
-      <div class="market-toolbar" role="group" aria-label="Chart controls">
-        <div class="intervals" role="group" aria-label="Candle interval" aria-describedby="interval-help">
-          <button type="button" data-interval="1m" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">1m</button>
-          <button type="button" data-interval="3m" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">3m</button>
-          <button type="button" data-interval="5m" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">5m</button>
-          <button type="button" data-interval="10m" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">10m</button>
-          <button type="button" data-interval="15m" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">15m</button>
-          <button type="button" data-interval="30m" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">30m</button>
-          <button type="button" data-interval="1hr" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">1hr</button>
-          <button type="button" data-interval="3hr" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">3hr</button>
-          <button type="button" data-interval="4hr" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">4hr</button>
-          <button type="button" data-interval="8hr" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">8hr</button>
-          <button type="button" data-interval="12hr" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">12hr</button>
-          <button type="button" data-interval="1d" class="on" aria-pressed="true">1d</button>
-          <button type="button" data-interval="3d" aria-pressed="false">3d</button>
-          <button type="button" data-interval="1w" aria-pressed="false">1w</button>
-          <button type="button" data-interval="1M" aria-pressed="false" title="Calendar month · UTC">1M</button>
-          <button type="button" data-interval="30w" aria-pressed="false" title="30 weeks · 210 days · UTC">30w</button>
-        </div>
-        <label for="chart-type" class="sr-only">Chart type</label>
-        <select id="chart-type"><option value="candles">Candles</option><option value="line">Line</option></select>
-        <button id="chart-indicators" type="button" aria-haspopup="dialog">Indicators</button>
-        <button id="chart-report" type="button" aria-haspopup="dialog">Strategy</button>
+      <div class="chart-bar" role="toolbar" aria-label="Chart tools">
+        <button id="open-intervals" type="button" aria-haspopup="dialog" title="Timeframe">1D <span aria-hidden="true">▾</span></button>
+        <button id="open-drawings" type="button" aria-haspopup="dialog" title="Drawing tools"><span aria-hidden="true">✎</span> <span class="bar-label">Draw</span></button>
+        <button id="chart-indicators" type="button" aria-haspopup="dialog" title="Indicators"><span aria-hidden="true">ƒx</span><span class="sr-only">Indicators</span></button>
+        <button id="open-broker" type="button" aria-haspopup="dialog" title="Trade with a broker"><span aria-hidden="true">⇄</span> <span class="bar-label">Trade</span></button>
+        <button id="open-hub" type="button" aria-haspopup="dialog" title="Analysis hub"><span aria-hidden="true">⋯</span><span class="sr-only">Analysis hub</span><span id="hub-dot" class="dot" hidden></span></button>
+        <span class="bar-spacer"></span>
+        <button id="chart-undo" type="button" aria-label="Undo" title="Undo" disabled>↶</button>
+        <button id="chart-fullscreen" type="button" aria-label="Full screen chart" title="Full screen" aria-pressed="false">⤢</button>
       </div>
-      <p id="interval-help" class="muted small">Minute and hour intervals are unavailable: this synthetic feed only has daily bars.</p>
       <div class="market-canvas">
-        <div class="drawing-tools" role="group" aria-label="Chart tools">
-          <button id="chart-crosshair" type="button" aria-label="Crosshair" title="Crosshair" aria-pressed="true">＋</button>
-          <button id="chart-trend" type="button" aria-label="Draw trend line" title="Draw trend line: select two chart points" aria-pressed="false">╱</button>
-          <button id="chart-clear" type="button" aria-label="Clear trend lines" title="Clear trend lines">⌫</button>
-          <button id="chart-zoom-in" type="button" aria-label="Zoom in" title="Zoom in">+</button>
-          <button id="chart-zoom-out" type="button" aria-label="Zoom out" title="Zoom out">−</button>
-          <button id="chart-reset" type="button" aria-label="Reset chart view" title="Reset chart view">↺</button>
-        </div>
+        <div id="draw-bar" class="chart-banner" hidden><span id="draw-hint" role="status"></span><button id="draw-finish" type="button" hidden>Finish</button><button id="draw-cancel" type="button">Cancel</button></div>
+        <div id="replay-bar" class="chart-banner" hidden><span id="replay-label" role="status"></span><button id="replay-back" type="button" aria-label="Back one bar">⏮</button><button id="replay-play" type="button" aria-label="Play" aria-pressed="false">▶</button><button id="replay-step" type="button" aria-label="Forward one bar">⏭</button><button id="replay-exit" type="button">Exit</button></div>
         <div class="chart-stack">
           <div id="market-chart" class="chart" role="img" aria-label="Historical synthetic candlestick price chart"></div>
           <div id="rsi-pane" hidden><span class="rsi-label">RSI 14 · Wilder</span><div id="rsi-chart" role="img" aria-label="Relative strength index, 14 candle periods"></div></div>
+          <div id="macd-pane" class="study-pane" hidden><span class="rsi-label">MACD 12 26 9</span><div id="macd-chart" role="img" aria-label="MACD line, signal and histogram"></div></div>
         </div>
         <p id="chart-empty" class="chart-empty" role="status" hidden></p>
       </div>
       <div class="market-chart-foot">
         <span id="chart-readout" class="small muted" aria-live="off">Crosshair shows OHLC · UTC</span>
+        <button id="chart-zoom-out" type="button" aria-label="Zoom out" title="Zoom out">−</button>
+        <button id="chart-zoom-in" type="button" aria-label="Zoom in" title="Zoom in">+</button>
+        <button id="chart-reset" type="button" aria-label="Reset chart view" title="Reset chart view">↺</button>
         <button id="chart-log" type="button" aria-pressed="false">Log</button>
       </div>
       <div id="overlay-readout" class="overlay-readout" hidden><span id="overlay-summary"></span><button id="clear-overlay" type="button">Clear</button></div>
@@ -95,14 +76,79 @@
         <button type="button" data-range="0" aria-pressed="false">All</button>
         <span class="sub">UTC · historical</span>
       </div>
-      <dialog id="indicator-dialog" class="chart-dialog" aria-labelledby="indicator-title">
-        <div class="browse-heading"><h1 id="indicator-title">Indicators</h1><button id="close-indicators" type="button" aria-label="Close indicators">✕</button></div>
-        <div class="dialog-content"><p class="small muted">Indicators use the selected candle interval. They are calculated from available synthetic history before the visible range is cropped.</p>
-          <div class="indicator-options"><button id="chart-volume" type="button" aria-pressed="true">Volume</button><button id="chart-sma" type="button" aria-pressed="false">SMA 20</button><button id="chart-rsi" type="button" aria-pressed="false">RSI 14</button></div>
-          <p class="small muted">RSI uses Wilder smoothing over 14 price changes. Flat prices read 50; missing data restarts warmup.</p>
+
+      <dialog id="intervals-sheet" class="sheet" aria-labelledby="intervals-title">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="sheet-head"><h2 id="intervals-title">Timeframe</h2><button type="button" class="sheet-close" data-close aria-label="Close">✕</button></div>
+        <div class="sheet-body">
+          <p id="interval-help" class="muted small">Minute and hour intervals are unavailable: this synthetic feed only has daily bars.</p>
+          <h3>Minutes</h3>
+          <div class="intervals tile-row" role="group" aria-label="Candle interval" aria-describedby="interval-help">
+            <button type="button" data-interval="1m" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">1m</button>
+            <button type="button" data-interval="3m" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">3m</button>
+            <button type="button" data-interval="5m" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">5m</button>
+            <button type="button" data-interval="10m" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">10m</button>
+            <button type="button" data-interval="15m" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">15m</button>
+            <button type="button" data-interval="30m" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">30m</button>
+          </div>
+          <h3>Hours</h3>
+          <div class="intervals tile-row" role="group" aria-label="Candle interval, hours">
+            <button type="button" data-interval="1hr" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">1hr</button>
+            <button type="button" data-interval="3hr" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">3hr</button>
+            <button type="button" data-interval="4hr" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">4hr</button>
+            <button type="button" data-interval="8hr" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">8hr</button>
+            <button type="button" data-interval="12hr" aria-pressed="false" disabled title="Unavailable: the current feed only has daily bars">12hr</button>
+          </div>
+          <h3>Days and longer</h3>
+          <div class="intervals tile-row" role="group" aria-label="Candle interval, days">
+            <button type="button" data-interval="1d" class="on" aria-pressed="true">1d</button>
+            <button type="button" data-interval="3d" aria-pressed="false">3d</button>
+            <button type="button" data-interval="1w" aria-pressed="false">1w</button>
+            <button type="button" data-interval="1M" aria-pressed="false" title="Calendar month · UTC">1M</button>
+            <button type="button" data-interval="30w" aria-pressed="false" title="30 weeks · 210 days · UTC">30w</button>
+          </div>
         </div>
       </dialog>
-      <dialog id="report-overlay-dialog" class="chart-dialog" aria-labelledby="report-overlay-title">
+
+      <dialog id="draw-sheet" class="sheet" aria-labelledby="draw-title">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="sheet-head"><h2 id="draw-title">Drawing tools</h2><button type="button" class="sheet-close" data-close aria-label="Close">✕</button></div>
+        <div class="sheet-body">
+          <label for="draw-search" class="sr-only">Search drawing tools</label>
+          <input id="draw-search" type="search" placeholder="Search drawing tools…" autocomplete="off">
+          <div id="draw-categories" class="sheet-tabs" role="tablist" aria-label="Drawing categories"></div>
+          <div id="draw-tiles" class="tile-grid"></div>
+          <p class="muted small">Drawings are temporary: they reset when the asset, range or interval changes. Projections are illustrations, not predictions.</p>
+        </div>
+      </dialog>
+
+      <dialog id="hub-sheet" class="sheet" aria-labelledby="hub-title">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="sheet-head"><h2 id="hub-title">Analysis</h2><button type="button" class="sheet-close" data-close aria-label="Close">✕</button></div>
+        <div class="sheet-body">
+          <p class="hub-layout"><span class="sub">Layout</span> <strong id="hub-layout-name">Unnamed</strong></p>
+          <label for="chart-type">Chart type</label>
+          <select id="chart-type"><option value="candles">Candles</option><option value="hollow">Hollow candles</option><option value="heikin">Heikin Ashi</option><option value="bars">Bars</option><option value="line">Line</option><option value="area">Area</option></select>
+          <div id="hub-sections"></div>
+        </div>
+      </dialog>
+
+      <dialog id="panel-sheet" class="sheet" aria-labelledby="panel-title">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="sheet-head"><button type="button" id="panel-back" class="sheet-back" aria-label="Back to analysis">‹</button><h2 id="panel-title"></h2><button type="button" class="sheet-close" data-close aria-label="Close">✕</button></div>
+        <div id="panel-body" class="sheet-body"></div>
+      </dialog>
+
+      <dialog id="indicator-dialog" class="chart-dialog sheet" aria-labelledby="indicator-title">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="sheet-head"><button type="button" id="indicator-back" class="sheet-back" aria-label="Back to indicators" hidden>‹</button><h2 id="indicator-title">Indicators, metrics & strategies</h2><button id="close-indicators" type="button" class="sheet-close" aria-label="Close indicators">✕</button></div>
+        <div class="sheet-body">
+          <label for="indicator-search" class="sr-only">Search indicators, metrics and strategies</label>
+          <input id="indicator-search" type="search" placeholder="Search indicators, metrics, strategies…" autocomplete="off">
+          <div id="indicator-body"></div>
+        </div>
+      </dialog>
+      <dialog id="report-overlay-dialog" class="chart-dialog sheet" aria-labelledby="report-overlay-title">
         <div class="browse-heading"><h1 id="report-overlay-title">Strategy on chart</h1><button id="close-report-overlay" type="button" aria-label="Close strategy overlay">✕</button></div>
         <div class="dialog-content">
           <p class="note">Display recorded fills from a Veyra backtest report. This does not run a strategy or place a trade.</p>
@@ -121,8 +167,10 @@
           <a id="overlay-backtest-link" class="small" href="#runs">Browse backtest history</a>
         </div>
       </dialog>
-      <dialog id="asset-browser" aria-labelledby="browse-title">
-        <div class="browse-heading"><h1 id="browse-title">Browse assets</h1><button id="close-browse" type="button" aria-label="Close browse assets">✕</button></div>
+      <dialog id="asset-browser" class="sheet" aria-labelledby="browse-title">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="browse-heading"><h1 id="browse-title">Symbols</h1><button id="close-browse" type="button" aria-label="Close symbols">✕</button></div>
+        <div class="sheet-tabs" role="tablist" aria-label="Symbol lists"><button type="button" role="tab" id="browse-tab-all" aria-selected="true">All assets</button><button type="button" role="tab" id="browse-tab-watch" aria-selected="false">Watchlist</button></div>
         <label for="browse-search" class="sr-only">Search all assets</label>
         <input id="browse-search" type="search" placeholder="Search assets…" autocomplete="off">
         <p class="muted small">Synthetic historical datasets. Not live market prices.</p>

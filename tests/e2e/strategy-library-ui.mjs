@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 const { JSDOM, VirtualConsole } = createRequire(import.meta.url)("jsdom");
 const html = readFileSync(new URL("../../apps/web/index.html", import.meta.url), "utf8");
-const scripts = ["chart-research.js", "workspace-store.js", "studio-assistant.js", "report-evidence.js", "proposal-diff.js", "strategy-backup.js", "saved-links.js", "app.js"]
+const scripts = ["chart-research.js", "chart-tools.js", "workspace-store.js", "studio-assistant.js", "report-evidence.js", "proposal-diff.js", "strategy-backup.js", "saved-links.js", "app.js"]
   .map((name) => readFileSync(new URL(`../../apps/web/${name}`, import.meta.url), "utf8"));
 const reply = (value, status = 200) => ({ ok: status < 400, status, statusText: String(status), json: async () => value });
 const page = (projects, next_cursor = null) => reply({ projects, next_cursor, has_more: next_cursor !== null });

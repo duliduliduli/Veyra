@@ -11,7 +11,7 @@ import { resolve } from "node:path";
 const { JSDOM, VirtualConsole } = createRequire(import.meta.url)("jsdom");
 const root = process.env.VEYRA_NAVIGATION_SOURCE ? pathToFileURL(`${resolve(process.env.VEYRA_NAVIGATION_SOURCE)}/`) : new URL("../../", import.meta.url);
 const html = readFileSync(new URL("apps/web/index.html", root), "utf8");
-const scripts = ["chart-research.js", "workspace-store.js", "studio-assistant.js", "backtest-params.js", "report-evidence.js", "proposal-diff.js", "strategy-backup.js", "saved-links.js", "app.js"]
+const scripts = ["chart-research.js", "chart-tools.js", "workspace-store.js", "studio-assistant.js", "backtest-params.js", "report-evidence.js", "proposal-diff.js", "strategy-backup.js", "saved-links.js", "app.js"]
   .map((name) => readFileSync(new URL(`apps/web/${name}`, root), "utf8"));
 const files = { "strategy.py": "# π 😀\r\n\tvalue = 1\r\nlast\r", "helpers/entry.py": "# inert\n<svg onload=window.unsafe=true>\u00a0", "helpers/empty.py": "" };
 const orgId = "30000000-0000-4000-8000-000000000001", cloudId = "40000000-0000-4000-8000-000000000001";
