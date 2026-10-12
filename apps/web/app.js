@@ -235,7 +235,7 @@ function marketChart() {
     trendLines.push(line);
     trendStart = null;
     $("chart-trend").setAttribute("aria-pressed", "false");
-    $("chart-readout").textContent = "Trend line added · drawings reset when the asset changes";
+    $("chart-readout").textContent = "Trend line added · drawings reset when the asset, range or interval changes";
   });
   return chart;
 }
@@ -389,7 +389,7 @@ $("asset-browser").addEventListener("close", () => {
 for (const id of ["browse-search", "browse-provider", "browse-sort"]) $(id).addEventListener("input", renderAssetBrowser);
 $("market-dataset").addEventListener("change", showMarkets);
 for (const [selector, apply] of [
-  ["[data-range]", (b) => { marketRange = Number(b.dataset.range); }],
+  ["[data-range]", (b) => { marketRange = Number(b.dataset.range); clearTrends(); }],
   ["[data-interval]", (b) => { marketInterval = b.dataset.interval; clearTrends(); }],
 ]) {
   for (const b of document.querySelectorAll(selector)) b.addEventListener("click", () => {

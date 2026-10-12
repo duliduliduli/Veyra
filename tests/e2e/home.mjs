@@ -288,6 +288,14 @@ try {
       assert.ok(Math.abs(await width() - browseWidth) < 1, 'Browsing without selecting must preserve zoom');
       await page.click('#chart-clear');
       assert.equal(await page.evaluate(() => trendLines.length), 0);
+      await page.click('#chart-trend');
+      await page.mouse.click(canvas.x + canvas.width * 0.3, canvas.y + canvas.height * 0.4);
+      await page.mouse.click(canvas.x + canvas.width * 0.6, canvas.y + canvas.height * 0.6);
+      assert.equal(await page.evaluate(() => trendLines.length), 1);
+      await page.click('[data-range="90"]');
+      assert.equal(await page.evaluate(() => trendLines.length), 0, 'Range changes must clear out-of-range drawings');
+      await checkChartData(page, 90);
+      await page.click('[data-range="365"]');
 
       // Navigating away and Back restores the home without unexpected API calls.
       await page.click('.tabs [data-tab="code"]');
